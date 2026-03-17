@@ -1160,6 +1160,158 @@ func TestDetail_PRMode(t *testing.T) {
 	}
 }
 
+func TestBrowse_AddsPendingOnlyItem_UsesPendingDetailLoader(t *testing.T) {
+	mainDB := newFakeDB()
+	forkDB := newFakeDB()
+	forkDB.branches["wl/charlie/w-new"] = true
+	forkDB.branchItems["wl/charlie/w-new"] = map[string]*fakeItem{
+		"w-new": {
+			ID:          "w-new",
+			Title:       "New docs task",
+			Description: "Document binary install paths",
+			Project:     "gascity",
+			Type:        "docs",
+			Priority:    1,
+			PostedBy:    "charlie",
+			Status:      "open",
+			EffortLevel: "small",
+		},
+	}
+
+	c := New(ClientConfig{
+		DB:        mainDB,
+		RigHandle: "alice",
+		Mode:      "pr",
+		LoadPendingDetail: func(wantedID string, pending PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error) {
+			return commons.QueryFullDetailAsOf(forkDB, wantedID, pending.Branch)
+		},
+		ListPendingItems: func() (map[string][]PendingItem, error) {
+			return map[string][]PendingItem{
+				"w-new": {{
+					RigHandle: "charlie",
+					Status:    "open",
+					Branch:    "wl/charlie/w-new",
+					ForkOwner: "charlie",
+				}},
+			}, nil
+		},
+	})
+
+	result, err := c.Browse(commons.BrowseFilter{View: "all", Priority: -1})
+	if err != nil {
+		t.Fatalf("Browse: %v", err)
+	}
+
+	if len(result.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(result.Items))
+	}
+	if result.Items[0].ID != "w-new" {
+		t.Fatalf("expected w-new, got %q", result.Items[0].ID)
+	}
+	if result.Items[0].Priority != 1 {
+		t.Errorf("priority = %d, want 1", result.Items[0].Priority)
+	}
+	if result.Items[0].Description != "Document binary install paths" {
+		t.Errorf("description = %q", result.Items[0].Description)
+	}
+}
+
+func TestDetail_PRMode_PendingOnlyItem_UsesPendingDetailLoader(t *testing.T) {
+	mainDB := newFakeDB()
+	forkDB := newFakeDB()
+	branch := "wl/charlie/w-new"
+	forkDB.branches[branch] = true
+	forkDB.branchItems[branch] = map[string]*fakeItem{
+		"w-new": {
+			ID:          "w-new",
+			Title:       "New docs task",
+			Description: "Document binary install paths",
+			Project:     "gascity",
+			Type:        "docs",
+			Priority:    1,
+			PostedBy:    "charlie",
+			Status:      "in_review",
+			EffortLevel: "small",
+		},
+	}
+	forkDB.completions["w-new"] = &fakeCompletion{
+		ID:          "c-1",
+		WantedID:    "w-new",
+		CompletedBy: "charlie",
+		Evidence:    "https://example.com/proof",
+		StampID:     "s-1",
+	}
+	forkDB.stamps["s-1"] = &fakeStamp{
+		ID:          "s-1",
+		Author:      "reviewer",
+		Subject:     "charlie",
+		Valence:     `{"quality":4,"reliability":5}`,
+		Severity:    "positive",
+		ContextID:   "w-new",
+		ContextType: "wanted",
+		SkillTags:   `["docs"]`,
+		Message:     "Looks good",
+	}
+
+	c := New(ClientConfig{
+		DB:        mainDB,
+		RigHandle: "alice",
+		Mode:      "pr",
+		LoadPendingDetail: func(wantedID string, pending PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error) {
+			return commons.QueryFullDetailAsOf(forkDB, wantedID, pending.Branch)
+		},
+		ListPendingItems: func() (map[string][]PendingItem, error) {
+			return map[string][]PendingItem{
+				"w-new": {{
+					RigHandle:   "charlie",
+					Status:      "in_review",
+					Branch:      branch,
+					BranchURL:   "https://example.com/branch",
+					PRURL:       "https://example.com/pr/1",
+					ForkOwner:   "charlie",
+					CompletedBy: "charlie",
+					Evidence:    "https://example.com/proof",
+				}},
+			}, nil
+		},
+	})
+
+	result, err := c.Detail("w-new")
+	if err != nil {
+		t.Fatalf("Detail: %v", err)
+	}
+	if result.Item == nil {
+		t.Fatal("expected item, got nil")
+	}
+	if result.Item.ID != "w-new" {
+		t.Errorf("item ID = %q, want w-new", result.Item.ID)
+	}
+	if result.Completion == nil || result.Completion.CompletedBy != "charlie" {
+		t.Fatalf("expected completion from pending fork, got %+v", result.Completion)
+	}
+	if result.Stamp == nil || result.Stamp.ID != "s-1" {
+		t.Fatalf("expected stamp from pending fork, got %+v", result.Stamp)
+	}
+	if result.Branch != branch {
+		t.Errorf("branch = %q, want %q", result.Branch, branch)
+	}
+	if result.BranchURL != "https://example.com/branch" {
+		t.Errorf("branchURL = %q", result.BranchURL)
+	}
+	if result.PRURL != "https://example.com/pr/1" {
+		t.Errorf("prURL = %q", result.PRURL)
+	}
+	if result.Delta != "new" {
+		t.Errorf("delta = %q, want new", result.Delta)
+	}
+	if len(result.BranchActions) != 0 {
+		t.Errorf("branchActions = %v, want none for foreign pending branch", result.BranchActions)
+	}
+	if len(result.UpstreamPRs) != 1 {
+		t.Fatalf("expected 1 upstream PR, got %d", len(result.UpstreamPRs))
+	}
+}
+
 func TestDashboard(t *testing.T) {
 	db := newFakeDB()
 	db.seedItem(fakeItem{ID: "w-1", Title: "My task", Status: "claimed", ClaimedBy: "alice", PostedBy: "bob", EffortLevel: "medium"})

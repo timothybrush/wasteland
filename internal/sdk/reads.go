@@ -14,6 +14,7 @@ type PendingItem struct {
 	Branch      string // e.g. "wl/alice/w-001"
 	BranchURL   string // web URL for the fork branch
 	PRURL       string // web URL for the upstream PR
+	ForkOwner   string // owner of the fork that hosts Branch
 	CompletedBy string // from fork branch completions table
 	Evidence    string // from fork branch completions table
 }
@@ -91,7 +92,7 @@ func (c *Client) Browse(filter commons.BrowseFilter) (*BrowseResult, error) {
 		if best.Branch == "" {
 			continue
 		}
-		item, err := commons.QueryWantedDetailAsOf(c.db, id, best.Branch)
+		item, _, _, err := c.loadPendingDetail(id, best)
 		if err != nil {
 			continue
 		}
@@ -203,6 +204,14 @@ func (c *Client) detailPR(wantedID string) (*DetailResult, error) {
 	}
 	effective := state.Effective()
 	if effective == nil {
+		upstreamPRs := c.fetchUpstreamPRs(wantedID)
+		if len(upstreamPRs) > 0 {
+			result, err := c.detailFromPending(wantedID, upstreamPRs)
+			if err == nil {
+				return result, nil
+			}
+			return nil, err
+		}
 		// Fall back to main query if resolve found nothing.
 		return c.detailWildWest(wantedID)
 	}
@@ -227,6 +236,39 @@ func (c *Client) detailPR(wantedID string) (*DetailResult, error) {
 	result.BranchActions = c.computeBranchActions(result)
 	result.UpstreamPRs = c.fetchUpstreamPRs(wantedID)
 	return result, nil
+}
+
+func (c *Client) loadPendingDetail(wantedID string, pending PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error) {
+	if c.LoadPendingDetail != nil {
+		item, completion, stamp, err := c.LoadPendingDetail(wantedID, pending)
+		if err == nil {
+			return item, completion, stamp, nil
+		}
+	}
+	return commons.QueryFullDetailAsOf(c.db, wantedID, pending.Branch)
+}
+
+func (c *Client) detailFromPending(wantedID string, pending []PendingItem) (*DetailResult, error) {
+	best := bestPendingState(pending)
+	if best.Branch == "" {
+		return c.detailWildWest(wantedID)
+	}
+
+	item, completion, stamp, err := c.loadPendingDetail(wantedID, best)
+	if err != nil {
+		return nil, err
+	}
+
+	return &DetailResult{
+		Item:        item,
+		Completion:  completion,
+		Stamp:       stamp,
+		Branch:      best.Branch,
+		BranchURL:   best.BranchURL,
+		PRURL:       best.PRURL,
+		Delta:       commons.ComputeDelta("", item.Status, true),
+		UpstreamPRs: pending,
+	}, nil
 }
 
 func (c *Client) detailWildWest(wantedID string) (*DetailResult, error) {

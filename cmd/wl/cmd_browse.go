@@ -167,10 +167,11 @@ func runBrowseLocal(stdout, stderr io.Writer, cfg *federation.Config, filter com
 
 	db := openDB(cfg.LocalDir)
 	client := sdk.New(sdk.ClientConfig{
-		DB:               db,
-		RigHandle:        cfg.RigHandle,
-		Mode:             cfg.ResolveMode(),
-		ListPendingItems: listPendingItemsFromPRs(cfg),
+		DB:                db,
+		RigHandle:         cfg.RigHandle,
+		Mode:              cfg.ResolveMode(),
+		LoadPendingDetail: pendingDetailLoaderCallback(cfg),
+		ListPendingItems:  listPendingItemsFromPRs(cfg),
 	})
 
 	result, err := client.Browse(filter)
@@ -190,10 +191,11 @@ func runBrowseRemote(stdout, _ io.Writer, cfg *federation.Config, filter commons
 		return err
 	}
 	client := sdk.New(sdk.ClientConfig{
-		DB:               db,
-		RigHandle:        cfg.RigHandle,
-		Mode:             cfg.ResolveMode(),
-		ListPendingItems: listPendingItemsFromPRs(cfg),
+		DB:                db,
+		RigHandle:         cfg.RigHandle,
+		Mode:              cfg.ResolveMode(),
+		LoadPendingDetail: pendingDetailLoaderCallback(cfg),
+		ListPendingItems:  listPendingItemsFromPRs(cfg),
 	})
 
 	result, err := client.Browse(filter)
