@@ -63,6 +63,10 @@ type fakeDB struct {
 	execCalls       []execCall
 }
 
+type laggyBranchDB struct {
+	*fakeDB
+}
+
 type execCall struct {
 	Branch    string
 	CommitMsg string
@@ -77,6 +81,10 @@ func newFakeDB() *fakeDB {
 		branches:    make(map[string]bool),
 		branchItems: make(map[string]map[string]*fakeItem),
 	}
+}
+
+func (l *laggyBranchDB) Branches(string) ([]string, error) {
+	return nil, nil
 }
 
 func (f *fakeDB) seedItem(item fakeItem) {
@@ -917,6 +925,128 @@ func TestBrowse_PendingClaimedBy_MultipleWithExisting(t *testing.T) {
 		}
 	}
 	t.Error("w-1 not found in results")
+}
+
+func TestBrowse_AddsPendingOnlyItem_AllView(t *testing.T) {
+	db := &laggyBranchDB{fakeDB: newFakeDB()}
+	db.branches["wl/alice/w-new"] = true
+	db.branchItems["wl/alice/w-new"] = map[string]*fakeItem{
+		"w-new": {
+			ID:          "w-new",
+			Title:       "New docs task",
+			Description: "Document binary install paths",
+			Project:     "gascity",
+			Type:        "docs",
+			Priority:    1,
+			PostedBy:    "alice",
+			Status:      "open",
+			EffortLevel: "small",
+		},
+	}
+
+	c := New(ClientConfig{
+		DB:        db,
+		RigHandle: "alice",
+		Mode:      "pr",
+		ListPendingItems: func() (map[string][]PendingItem, error) {
+			return map[string][]PendingItem{
+				"w-new": {{
+					RigHandle: "alice",
+					Status:    "open",
+					Branch:    "wl/alice/w-new",
+				}},
+			}, nil
+		},
+	})
+
+	result, err := c.Browse(commons.BrowseFilter{View: "all", Priority: -1})
+	if err != nil {
+		t.Fatalf("Browse: %v", err)
+	}
+
+	for _, item := range result.Items {
+		if item.ID == "w-new" {
+			if item.Priority != 1 {
+				t.Errorf("priority = %d, want 1", item.Priority)
+			}
+			if item.ClaimedBy != "" {
+				t.Errorf("claimed_by = %q, want empty for open item", item.ClaimedBy)
+			}
+			return
+		}
+	}
+	t.Fatal("w-new not found in results")
+}
+
+func TestBrowse_AddsPendingOnlyItem_MineView(t *testing.T) {
+	db := &laggyBranchDB{fakeDB: newFakeDB()}
+	db.branches["wl/alice/w-new"] = true
+	db.branches["wl/bob/w-other"] = true
+	db.branchItems["wl/alice/w-new"] = map[string]*fakeItem{
+		"w-new": {
+			ID:          "w-new",
+			Title:       "New docs task",
+			Project:     "gascity",
+			Type:        "docs",
+			Priority:    1,
+			PostedBy:    "alice",
+			Status:      "open",
+			EffortLevel: "small",
+		},
+	}
+	db.branchItems["wl/bob/w-other"] = map[string]*fakeItem{
+		"w-other": {
+			ID:          "w-other",
+			Title:       "Someone else's task",
+			Project:     "gascity",
+			Type:        "docs",
+			Priority:    2,
+			PostedBy:    "bob",
+			Status:      "open",
+			EffortLevel: "small",
+		},
+	}
+
+	c := New(ClientConfig{
+		DB:        db,
+		RigHandle: "alice",
+		Mode:      "pr",
+		ListPendingItems: func() (map[string][]PendingItem, error) {
+			return map[string][]PendingItem{
+				"w-new": {{
+					RigHandle: "alice",
+					Status:    "open",
+					Branch:    "wl/alice/w-new",
+				}},
+				"w-other": {{
+					RigHandle: "bob",
+					Status:    "open",
+					Branch:    "wl/bob/w-other",
+				}},
+			}, nil
+		},
+	})
+
+	result, err := c.Browse(commons.BrowseFilter{View: "mine", Priority: -1})
+	if err != nil {
+		t.Fatalf("Browse: %v", err)
+	}
+
+	var foundMine, foundOther bool
+	for _, item := range result.Items {
+		switch item.ID {
+		case "w-new":
+			foundMine = true
+		case "w-other":
+			foundOther = true
+		}
+	}
+	if !foundMine {
+		t.Fatal("w-new not found in mine view results")
+	}
+	if foundOther {
+		t.Fatal("w-other should not be present in mine view results")
+	}
 }
 
 func TestDetail_UpstreamPRs(t *testing.T) {
