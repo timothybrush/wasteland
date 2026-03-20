@@ -332,7 +332,7 @@ export function DetailView() {
                     </>
                   )}
                   {pr.evidence && <div className={styles.evidenceText}>{pr.evidence}</div>}
-                  {rigHandle === item.posted_by && (
+                  {(actions.includes("accept") || actions.includes("reject") || actions.includes("close")) && (
                     <div className={styles.actions}>
                       {pr.status === "in_review" && pr.evidence && (
                         <ActionButton
