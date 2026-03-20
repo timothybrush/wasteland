@@ -577,6 +577,42 @@ func TestClose(t *testing.T) {
 	}
 }
 
+func TestAccept_Handler(t *testing.T) {
+	db := newFakeDB()
+	db.items["w-1"] = &fakeItem{id: "w-1", title: "Fix bug", status: "in_review", claimedBy: "bob", postedBy: "alice", effortLevel: "medium"}
+	db.completions["w-1"] = "c-1"
+
+	ts := newTestServer(db, "wild-west")
+	defer ts.Close()
+
+	var resp MutationResponse
+	r := postJSON(t, ts, "/api/wanted/w-1/accept", `{"quality":5,"reliability":4,"severity":"branch"}`, &resp)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", r.StatusCode)
+	}
+	if resp.Detail == nil || resp.Detail.Item == nil {
+		t.Fatal("expected detail in response")
+	}
+	if resp.Detail.Item.Status != "completed" {
+		t.Errorf("expected completed, got %s", resp.Detail.Item.Status)
+	}
+}
+
+func TestAccept_Handler_RejectsZeroQuality(t *testing.T) {
+	db := newFakeDB()
+	db.items["w-1"] = &fakeItem{id: "w-1", title: "Fix bug", status: "in_review", claimedBy: "bob", postedBy: "alice", effortLevel: "medium"}
+	db.completions["w-1"] = "c-1"
+
+	ts := newTestServer(db, "wild-west")
+	defer ts.Close()
+
+	var resp ErrorResponse
+	r := postJSON(t, ts, "/api/wanted/w-1/accept", `{"quality":0}`, &resp)
+	if r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", r.StatusCode)
+	}
+}
+
 func TestDelete(t *testing.T) {
 	db := newFakeDB()
 	db.items["w-1"] = &fakeItem{id: "w-1", title: "Fix bug", status: "open", postedBy: "alice", effortLevel: "medium"}
@@ -780,6 +816,31 @@ func TestAcceptUpstream_Handler_MissingRigHandle(t *testing.T) {
 	}
 	if !strings.Contains(resp.Error, "rig_handle is required") {
 		t.Errorf("unexpected error: %s", resp.Error)
+	}
+}
+
+func TestAcceptUpstream_Handler_RejectsZeroQuality(t *testing.T) {
+	db := newFakeDB()
+	db.items["w-1"] = &fakeItem{id: "w-1", title: "Fix bug", status: "open", priority: 1, postedBy: "bob", effortLevel: "medium"}
+
+	client := sdk.New(sdk.ClientConfig{
+		DB:        db,
+		RigHandle: "alice",
+		Mode:      "wild-west",
+		ListPendingItems: func() (map[string][]sdk.PendingItem, error) {
+			return map[string][]sdk.PendingItem{
+				"w-1": {{RigHandle: "charlie", Status: "in_review", CompletedBy: "charlie", Evidence: "proof"}},
+			}, nil
+		},
+	})
+	srv := New(client)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	var resp ErrorResponse
+	r := postJSON(t, ts, "/api/wanted/w-1/accept-upstream", `{"rig_handle":"charlie","quality":0}`, &resp)
+	if r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", r.StatusCode)
 	}
 }
 

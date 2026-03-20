@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { setActiveUpstream } from "../api/client";
 import { CommandsContext } from "../hooks/useCommands";
 import { makeConfigResponse, makeDetailResponse, makeItem, mockFetch } from "../test-utils";
 import { DetailView } from "./DetailView";
@@ -23,7 +24,11 @@ function renderDetail(id = "item-1") {
 
 let cleanupFetch: () => void;
 
-afterEach(() => cleanupFetch?.());
+afterEach(() => {
+  setActiveUpstream(null);
+  localStorage.removeItem("wl_active");
+  cleanupFetch?.();
+});
 
 describe("DetailView", () => {
   it("shows skeleton while loading", () => {
@@ -74,9 +79,80 @@ describe("DetailView", () => {
     expect(screen.queryByText("Edit")).not.toBeInTheDocument();
   });
 
+  it("shows submission actions for admins when backend allows them", async () => {
+    cleanupFetch = mockFetch((url) => {
+      if (url.includes("/api/config")) return makeConfigResponse({ rig_handle: "admin" });
+      return makeDetailResponse({
+        item: makeItem({ posted_by: "alice", status: "claimed" }),
+        actions: ["accept", "reject", "close"],
+        upstream_prs: [
+          {
+            rig_handle: "charlie",
+            status: "in_review",
+            evidence: "https://github.com/org/repo/pull/1",
+            pr_url: "https://www.dolthub.com/repositories/org/db/pulls/1",
+          },
+        ],
+      });
+    });
+    renderDetail();
+    await waitFor(() => expect(screen.getByText("charlie")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "accept" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "reject" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "close" })).toBeInTheDocument();
+  });
+
+  it("shows submission actions for the poster when backend allows them", async () => {
+    cleanupFetch = mockFetch((url) => {
+      if (url.includes("/api/config")) return makeConfigResponse({ rig_handle: "alice" });
+      return makeDetailResponse({
+        item: makeItem({ posted_by: "alice", status: "claimed" }),
+        actions: ["accept", "reject", "close"],
+        upstream_prs: [
+          {
+            rig_handle: "charlie",
+            status: "in_review",
+            evidence: "https://github.com/org/repo/pull/1",
+            pr_url: "https://www.dolthub.com/repositories/org/db/pulls/1",
+          },
+        ],
+      });
+    });
+    renderDetail();
+    await waitFor(() => expect(screen.getByText("charlie")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "accept" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "reject" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "close" })).toBeInTheDocument();
+  });
+
+  it("hides submission actions when backend does not allow them", async () => {
+    cleanupFetch = mockFetch((url) => {
+      if (url.includes("/api/config")) return makeConfigResponse({ rig_handle: "alice" });
+      return makeDetailResponse({
+        item: makeItem({ posted_by: "alice", status: "claimed" }),
+        actions: [],
+        upstream_prs: [
+          {
+            rig_handle: "charlie",
+            status: "in_review",
+            evidence: "https://github.com/org/repo/pull/1",
+            pr_url: "https://www.dolthub.com/repositories/org/db/pulls/1",
+          },
+        ],
+      });
+    });
+    renderDetail();
+    await waitFor(() => expect(screen.getByText("charlie")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "accept" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "reject" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "close" })).not.toBeInTheDocument();
+  });
+
   it("action buttons trigger API calls", async () => {
-    const fetchFn = vi.fn((url: string) => {
+    setActiveUpstream("hop/wl-commons");
+    const fetchFn = vi.fn((url: string, init?: RequestInit) => {
       if (url.includes("/api/config")) return makeConfigResponse();
+      if (url.endsWith("/claim") && init?.method === "POST") return { detail: makeItem({ status: "claimed" }) };
       return makeDetailResponse({ actions: ["claim"] });
     });
     cleanupFetch = mockFetch(fetchFn);
@@ -101,11 +177,10 @@ describe("DetailView", () => {
   });
 
   it("delete navigates to /", async () => {
-    let callCount = 0;
-    cleanupFetch = mockFetch((url) => {
+    setActiveUpstream("hop/wl-commons");
+    cleanupFetch = mockFetch((url, init) => {
       if (url.includes("/api/config")) return makeConfigResponse();
-      if (url.includes("/delete") || (url.endsWith("/item-1") && callCount > 0)) return { detail: null };
-      callCount++;
+      if (url.endsWith("/api/wanted/item-1") && init?.method === "DELETE") return { detail: null };
       return makeDetailResponse({ actions: ["delete"] });
     });
     renderDetail();
@@ -118,8 +193,10 @@ describe("DetailView", () => {
   });
 
   it("done form submits evidence", async () => {
-    const fetchFn = vi.fn((url: string) => {
+    setActiveUpstream("hop/wl-commons");
+    const fetchFn = vi.fn((url: string, init?: RequestInit) => {
       if (url.includes("/api/config")) return makeConfigResponse();
+      if (url.endsWith("/done") && init?.method === "POST") return { detail: makeItem({ status: "claimed" }) };
       return makeDetailResponse({ actions: ["done"] });
     });
     cleanupFetch = mockFetch(fetchFn);
