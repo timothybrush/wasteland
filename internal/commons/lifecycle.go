@@ -134,26 +134,36 @@ func PushOriginMain(dbDir string, stdout io.Writer) error {
 	return PushBranchToRemoteForce(dbDir, "origin", "main", true, stdout)
 }
 
+// Admins is the set of rig handles with elevated transition permissions.
+// Admins can accept, reject, and close any item as if they were the poster.
+var Admins = map[string]bool{
+	"julianknutsen": true,
+	"steveyegge":    true,
+	"csells":        true,
+}
+
 // CanPerformTransition checks whether actor can perform transition t on item.
 func CanPerformTransition(item *WantedItem, t Transition, actor string) bool {
 	if item == nil {
 		return false
 	}
+	isPoster := item.PostedBy == actor
+	isAdmin := Admins[actor]
 	switch t {
 	case TransitionClaim:
 		return true // any rig can claim
 	case TransitionUnclaim:
-		return item.ClaimedBy == actor || item.PostedBy == actor
+		return item.ClaimedBy == actor || isPoster
 	case TransitionDone:
 		return item.ClaimedBy == actor
 	case TransitionAccept:
-		return item.PostedBy == actor && item.ClaimedBy != actor
+		return (isPoster || isAdmin) && item.ClaimedBy != actor
 	case TransitionReject:
-		return item.PostedBy == actor
+		return isPoster || isAdmin
 	case TransitionClose:
-		return item.PostedBy == actor
+		return isPoster || isAdmin
 	case TransitionDelete:
-		return item.PostedBy == actor
+		return isPoster
 	default:
 		return false
 	}

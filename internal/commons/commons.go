@@ -460,35 +460,6 @@ func parseSimpleCSV(data string) []map[string]string {
 	return result
 }
 
-// parseCSVLine parses a single CSV line, handling quoted fields.
-func parseCSVLine(line string) []string {
-	var fields []string
-	var field strings.Builder
-	inQuote := false
-
-	for i := 0; i < len(line); i++ {
-		ch := line[i]
-		switch {
-		case ch == '"' && !inQuote:
-			inQuote = true
-		case ch == '"' && inQuote:
-			if i+1 < len(line) && line[i+1] == '"' {
-				field.WriteByte('"')
-				i++
-			} else {
-				inQuote = false
-			}
-		case ch == ',' && !inQuote:
-			fields = append(fields, field.String())
-			field.Reset()
-		default:
-			field.WriteByte(ch)
-		}
-	}
-	fields = append(fields, field.String())
-	return fields
-}
-
 // QueryCompletion fetches the completion record for a wanted item.
 func QueryCompletion(db DB, wantedID string) (*CompletionRecord, error) {
 	return queryCompletionRef(db, wantedID, "")

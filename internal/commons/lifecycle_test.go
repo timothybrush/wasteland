@@ -126,6 +126,47 @@ func TestCanPerformTransition_Accept(t *testing.T) {
 	}
 }
 
+func TestCanPerformTransition_Admin(t *testing.T) {
+	item := &WantedItem{
+		ID:        "w-test",
+		Status:    "in_review",
+		PostedBy:  "poster",
+		ClaimedBy: "claimer",
+	}
+
+	// Admin (not claimer) can accept.
+	if !CanPerformTransition(item, TransitionAccept, "julianknutsen") {
+		t.Error("admin should be able to accept")
+	}
+	// Admin can reject.
+	if !CanPerformTransition(item, TransitionReject, "julianknutsen") {
+		t.Error("admin should be able to reject")
+	}
+	// Admin can close.
+	if !CanPerformTransition(item, TransitionClose, "steveyegge") {
+		t.Error("admin should be able to close")
+	}
+	// Admin who is also the claimer cannot accept own work.
+	selfItem := &WantedItem{
+		ID:        "w-test",
+		Status:    "in_review",
+		PostedBy:  "poster",
+		ClaimedBy: "csells",
+	}
+	if CanPerformTransition(selfItem, TransitionAccept, "csells") {
+		t.Error("admin who claimed should not be able to accept own work")
+	}
+	// Admin cannot delete (poster-only).
+	openItem := &WantedItem{
+		ID:       "w-test",
+		Status:   "open",
+		PostedBy: "poster",
+	}
+	if CanPerformTransition(openItem, TransitionDelete, "julianknutsen") {
+		t.Error("admin should not be able to delete (poster-only)")
+	}
+}
+
 func TestTransitionLabel(t *testing.T) {
 	tests := []struct {
 		t    Transition
