@@ -442,6 +442,16 @@ func (s *Server) handleAccept(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
+	if req.Quality < 1 || req.Quality > 5 {
+		writeError(w, http.StatusBadRequest, "quality must be 1-5")
+		return
+	}
+	if req.Reliability == 0 {
+		req.Reliability = req.Quality
+	}
+	if req.Severity == "" {
+		req.Severity = "leaf"
+	}
 	result, err := client.Accept(id, sdk.AcceptInput{
 		Quality:     req.Quality,
 		Reliability: req.Reliability,
@@ -471,6 +481,16 @@ func (s *Server) handleAcceptUpstream(w http.ResponseWriter, r *http.Request) {
 	if req.RigHandle == "" {
 		writeError(w, http.StatusBadRequest, "rig_handle is required")
 		return
+	}
+	if req.Quality < 1 || req.Quality > 5 {
+		writeError(w, http.StatusBadRequest, "quality must be 1-5")
+		return
+	}
+	if req.Reliability == 0 {
+		req.Reliability = req.Quality
+	}
+	if req.Severity == "" {
+		req.Severity = "leaf"
 	}
 	result, err := client.AcceptUpstream(id, req.RigHandle, sdk.AcceptInput{
 		Quality:     req.Quality,

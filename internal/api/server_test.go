@@ -754,7 +754,7 @@ func TestAcceptUpstream_Handler(t *testing.T) {
 	defer ts.Close()
 
 	var resp MutationResponse
-	r := postJSON(t, ts, "/api/wanted/w-1/accept-upstream", `{"rig_handle":"charlie"}`, &resp)
+	r := postJSON(t, ts, "/api/wanted/w-1/accept-upstream", `{"rig_handle":"charlie","quality":3}`, &resp)
 	if r.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", r.StatusCode)
 	}

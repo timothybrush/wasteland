@@ -455,8 +455,24 @@ func (d *DoltHubProvider) FindPR(upstreamOrg, db, forkOrg, fromBranch string) (p
 }
 
 // dolthubGet performs a GET request to the DoltHub API. Adds auth if a token is set.
-func (d *DoltHubProvider) dolthubGet(url string) ([]byte, error) {
-	req, err := http.NewRequest("GET", url, nil)
+func (d *DoltHubProvider) dolthubGet(rawURL string) ([]byte, error) {
+	const maxRetries = 2
+	var lastErr error
+	for attempt := range maxRetries {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+		}
+		body, err := d.dolthubGetOnce(rawURL)
+		if err == nil {
+			return body, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+func (d *DoltHubProvider) dolthubGetOnce(rawURL string) ([]byte, error) {
+	req, err := http.NewRequest("GET", rawURL, nil)
 	if err != nil {
 		return nil, err
 	}

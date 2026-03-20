@@ -89,7 +89,15 @@ class ApiError extends Error {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // Inject X-Wasteland and X-Impersonate headers on non-auth API calls.
   let fetchInit = init;
-  if ((_activeUpstream || _impersonateHandle) && !path.startsWith("/api/auth/")) {
+  if (!path.startsWith("/api/auth/")) {
+    // Re-read from localStorage as fallback if the in-memory value hasn't been set yet.
+    if (!_activeUpstream) {
+      _activeUpstream = loadActiveUpstream();
+    }
+    const isWrite = init?.method && init.method !== "GET";
+    if (isWrite && !_activeUpstream) {
+      throw new ApiError(0, "Not connected to a wasteland — please refresh the page");
+    }
     const headers = new Headers(init?.headers);
     if (_activeUpstream) {
       headers.set("X-Wasteland", _activeUpstream);

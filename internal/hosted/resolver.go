@@ -72,7 +72,8 @@ func newPendingUpstreamCache(provider *remote.DoltHubProvider, upOrg, upDB strin
 		c.mu.Unlock()
 	}
 
-	go refresh()
+	// First refresh is synchronous so the cache is populated before any reads.
+	refresh()
 
 	go func() {
 		ticker := time.NewTicker(interval)
