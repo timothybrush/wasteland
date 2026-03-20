@@ -193,3 +193,41 @@ func TestNangoProxyTransport_QueryParamsPreserved(t *testing.T) {
 		t.Errorf("expected query params preserved, got %s", gotQuery)
 	}
 }
+
+func TestNewNangoProxyClient_UsesDefaultDoltHubBase(t *testing.T) {
+	var gotReq *http.Request
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotReq = r
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	client := NewNangoProxyClient(backend.URL, "nango-secret", "dolthub", "conn-99")
+	transport, ok := client.Transport.(*NangoProxyTransport)
+	if !ok {
+		t.Fatalf("Transport = %T, want *NangoProxyTransport", client.Transport)
+	}
+	if transport.dolthubBase() != "https://www.dolthub.com/api/v1alpha1" {
+		t.Fatalf("dolthubBase() = %q, want default", transport.dolthubBase())
+	}
+
+	req, _ := http.NewRequest("GET", "https://www.dolthub.com/api/v1alpha1/org/db/main", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if gotReq == nil {
+		t.Fatal("expected backend request")
+	}
+	if gotReq.URL.Path != "/proxy/org/db/main" {
+		t.Fatalf("got path %q, want /proxy/org/db/main", gotReq.URL.Path)
+	}
+	if got := gotReq.Header.Get("Authorization"); got != "Bearer nango-secret" {
+		t.Fatalf("Authorization = %q, want Bearer nango-secret", got)
+	}
+	if got := gotReq.Header.Get("Connection-Id"); got != "conn-99" {
+		t.Fatalf("Connection-Id = %q, want conn-99", got)
+	}
+}

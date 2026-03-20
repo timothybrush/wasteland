@@ -10,6 +10,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	newPileClient      = pile.NewDefault
+	queryPileProfile   = pile.QueryProfile
+	searchPileProfiles = pile.SearchProfiles
+)
+
 func newProfileCmd(stdout, stderr io.Writer) *cobra.Command {
 	var search string
 
@@ -41,10 +47,10 @@ EXAMPLES:
 }
 
 func runProfile(_ *cobra.Command, stdout, _ io.Writer, handle string) error {
-	client := pile.NewDefault()
+	client := newPileClient()
 
 	sp := style.StartSpinner(stdout, "Fetching profile...")
-	profile, err := pile.QueryProfile(client, handle)
+	profile, err := queryPileProfile(client, handle)
 	sp.Stop()
 	if err != nil {
 		return err
@@ -170,10 +176,10 @@ func runProfile(_ *cobra.Command, stdout, _ io.Writer, handle string) error {
 }
 
 func runProfileSearch(_ *cobra.Command, stdout, _ io.Writer, query string) error {
-	client := pile.NewDefault()
+	client := newPileClient()
 
 	sp := style.StartSpinner(stdout, "Searching profiles...")
-	results, err := pile.SearchProfiles(client, query, 20)
+	results, err := searchPileProfiles(client, query, 20)
 	sp.Stop()
 	if err != nil {
 		return err

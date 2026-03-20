@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useOptimistic, useState } from "react";
+import { startTransition, useCallback, useEffect, useOptimistic, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import {
@@ -86,7 +86,9 @@ export function DetailView() {
 
     const newStatus = actionStatusMap[action];
     if (newStatus) {
-      setOptimisticStatus(newStatus);
+      startTransition(() => {
+        setOptimisticStatus(newStatus);
+      });
     }
 
     try {

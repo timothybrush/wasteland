@@ -13,6 +13,19 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var createWithProvider = func(
+	stdout io.Writer,
+	provider remote.Provider,
+	store federation.ConfigStore,
+	opts federation.CreateOptions,
+) (*federation.CreateResult, error) {
+	svc := federation.NewServiceWith(provider, store)
+	svc.OnProgress = func(step string) {
+		fmt.Fprintf(stdout, "  %s\n", step)
+	}
+	return svc.Create(opts)
+}
+
 func newCreateCmd(stdout, stderr io.Writer) *cobra.Command {
 	var (
 		handle      string
@@ -128,14 +141,9 @@ func runCreate(stdout, stderr io.Writer, upstream, name, handle, displayName, em
 		email = gitConfigValue("user.email")
 	}
 
-	svc := federation.NewServiceWith(provider, store)
-	svc.OnProgress = func(step string) {
-		fmt.Fprintf(stdout, "  %s\n", step)
-	}
-
 	fmt.Fprintf(stdout, "Creating wasteland %s...\n", upstream)
 
-	result, err := svc.Create(federation.CreateOptions{
+	result, err := createWithProvider(stdout, provider, store, federation.CreateOptions{
 		Upstream:    upstream,
 		Handle:      handle,
 		DisplayName: displayName,

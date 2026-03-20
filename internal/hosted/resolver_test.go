@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/gastownhall/wasteland/internal/sdk"
 )
 
 func newFakeNangoForResolver(t *testing.T) *httptest.Server {
@@ -290,5 +292,146 @@ func TestWorkspaceResolver_MultipleWastelands(t *testing.T) {
 	}
 	if c2.Mode() != "pr" {
 		t.Errorf("expected pr, got %s", c2.Mode())
+	}
+}
+
+func TestWorkspaceResolver_BuildClientClosures(t *testing.T) {
+	meta := &UserMetadata{
+		RigHandle: "alice",
+		Wastelands: []WastelandConfig{
+			{
+				Upstream: "hop/wl-commons",
+				ForkOrg:  "alice-org",
+				ForkDB:   "wl-commons",
+			},
+		},
+	}
+	var savedMeta *UserMetadata
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/connection/conn-1":
+			resp := nangoConnectionResponse{ConnectionID: "conn-1"}
+			resp.Credentials.APIKey = "token"
+			b, _ := json.Marshal(meta)
+			resp.Metadata = json.RawMessage(b)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		case r.Method == http.MethodPatch && r.URL.Path == "/connection/conn-1/metadata":
+			if err := json.NewDecoder(r.Body).Decode(&savedMeta); err != nil {
+				t.Fatalf("decoding metadata patch: %v", err)
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	nango := NewNangoClient(NangoConfig{
+		BaseURL:       ts.URL,
+		SecretKey:     "secret",
+		IntegrationID: "dolthub",
+	})
+	resolver := NewWorkspaceResolver(nango, NewSessionStore())
+
+	ws, err := resolver.Resolve(&UserSession{
+		ID:           "sess-1",
+		ConnectionID: "conn-1",
+		CreatedAt:    time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+
+	client, err := ws.Client("hop/wl-commons")
+	if err != nil {
+		t.Fatalf("Client() error = %v", err)
+	}
+	if client.Mode() != "pr" {
+		t.Fatalf("Mode() = %q, want default pr", client.Mode())
+	}
+	if got := client.BranchURL("wl/alice/w-1"); got != "https://www.dolthub.com/repositories/alice-org/wl-commons/data/wl%2Falice%2Fw-1" {
+		t.Fatalf("BranchURL() = %q, want encoded DoltHub URL", got)
+	}
+	if err := client.SaveSettings("wild-west", true); err != nil {
+		t.Fatalf("SaveSettings() error = %v", err)
+	}
+	if savedMeta == nil {
+		t.Fatal("expected metadata patch")
+	}
+	entry := savedMeta.FindWasteland("hop/wl-commons")
+	if entry == nil || entry.Mode != "wild-west" || !entry.Signing {
+		t.Fatalf("saved metadata = %+v", savedMeta)
+	}
+	if err := client.CloseUpstreamPR("https://example.com/no-pr-here"); err == nil {
+		t.Fatal("expected invalid PR URL error")
+	}
+	if _, _, _, err := client.LoadPendingDetail("w-1", sdk.PendingItem{}); err == nil {
+		t.Fatal("expected missing fork owner/branch error")
+	}
+}
+
+func TestExtractWantedIDFromBranch(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		branch string
+		want   string
+	}{
+		{branch: "wl/alice/w-123", want: "w-123"},
+		{branch: "wl/alice/nested/id", want: "nested/id"},
+		{branch: "feature/alice/w-123", want: "feature/alice/w-123"},
+	}
+
+	for _, tt := range tests {
+		if got := extractWantedIDFromBranch(tt.branch); got != tt.want {
+			t.Fatalf("extractWantedIDFromBranch(%q) = %q, want %q", tt.branch, got, tt.want)
+		}
+	}
+}
+
+func TestExtractPRID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		url  string
+		want string
+	}{
+		{
+			url:  "https://www.dolthub.com/repositories/org/db/pulls/123",
+			want: "123",
+		},
+		{
+			url:  "https://www.dolthub.com/repositories/org/db/pulls/123?tab=files",
+			want: "123?tab=files",
+		},
+		{
+			url:  "https://www.dolthub.com/repositories/org/db",
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		if got := extractPRID(tt.url); got != tt.want {
+			t.Fatalf("extractPRID(%q) = %q, want %q", tt.url, got, tt.want)
+		}
+	}
+}
+
+func TestPendingUpstreamCache_Get(t *testing.T) {
+	t.Parallel()
+
+	cache := &pendingUpstreamCache{
+		cached: map[string][]sdk.PendingItem{
+			"w-1": {{RigHandle: "alice", Status: "claimed"}},
+		},
+	}
+	got, err := cache.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if len(got["w-1"]) != 1 || got["w-1"][0].RigHandle != "alice" {
+		t.Fatalf("Get() = %+v", got)
 	}
 }

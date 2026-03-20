@@ -30,6 +30,50 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	queryScoreboardDetailEntries = commons.QueryScoreboardDetail
+	queryScoreboardDumpData      = commons.QueryScoreboardDump
+	listPendingWantedStates      = func(upstreamOrg, db, token string) (map[string][]remote.PendingWantedState, error) {
+		return remote.NewDoltHubProvider(token).ListPendingWantedIDs(upstreamOrg, db)
+	}
+	newLocalWorkflowDB = func(localDir, mode string) localWorkflowDB {
+		return backend.NewLocalDB(localDir, mode)
+	}
+	newRemoteWorkflowDB = func(token, upstreamOrg, upstreamDB, forkOrg, forkDB, mode string) remoteWorkflowDB {
+		return backend.NewRemoteDB(token, upstreamOrg, upstreamDB, forkOrg, forkDB, mode)
+	}
+	newHostedPublicDB = func() commons.DB {
+		return backend.NewRemoteDB("", "hop", "wl-commons", "hop", "wl-commons", "")
+	}
+	newSelfHostedAPIServer = func(client *sdk.Client) selfHostedAPIServer {
+		return api.New(client)
+	}
+	serveHTTPListen       = func(srv *http.Server) error { return srv.ListenAndServe() }
+	serveSignalNotify     = func(c chan<- os.Signal) { signal.Notify(c, syscall.SIGINT, syscall.SIGTERM) }
+	serveShutdown         = func(srv *http.Server, ctx context.Context) error { return srv.Shutdown(ctx) }
+	serveContextWithLimit = context.WithTimeout
+	serveListen           = listenAndServeGraceful
+)
+
+type localWorkflowDB interface {
+	commons.DB
+	Sync() error
+	PushMain(io.Writer) error
+}
+
+type remoteWorkflowDB interface {
+	commons.DB
+	Sync() error
+	Diff(string) (string, error)
+}
+
+type selfHostedAPIServer interface {
+	http.Handler
+	SetScoreboard(*api.CachedEndpoint)
+	SetScoreboardDetail(*api.CachedEndpoint)
+	SetScoreboardDump(*api.CachedEndpoint)
+}
+
 func newServeCmd(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -65,19 +109,19 @@ func resolvePort(cmd *cobra.Command) int {
 // SIGINT/SIGTERM, giving in-flight requests up to 10 seconds to complete.
 func listenAndServeGraceful(srv *http.Server) error {
 	errCh := make(chan error, 1)
-	go func() { errCh <- srv.ListenAndServe() }()
+	go func() { errCh <- serveHTTPListen(srv) }()
 
 	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	serveSignalNotify(quit)
 
 	select {
 	case err := <-errCh:
 		return err
 	case sig := <-quit:
 		slog.Info("shutting down", "signal", sig.String())
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := serveContextWithLimit(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := srv.Shutdown(ctx); err != nil {
+		if err := serveShutdown(srv, ctx); err != nil {
 			return fmt.Errorf("graceful shutdown failed: %w", err)
 		}
 		slog.Info("server stopped")
@@ -115,12 +159,15 @@ func runServe(cmd *cobra.Command, stdout, stderr io.Writer) error {
 		return hintWrap(err)
 	}
 
-	var db commons.DB
+	var (
+		db       commons.DB
+		remoteDB remoteWorkflowDB
+	)
 	if cfg.ResolveBackend() == federation.BackendLocal {
 		if err := requireDolt(); err != nil {
 			return err
 		}
-		localDB := backend.NewLocalDB(cfg.LocalDir, cfg.ResolveMode())
+		localDB := newLocalWorkflowDB(cfg.LocalDir, cfg.ResolveMode())
 		db = localDB
 
 		sp := style.StartSpinner(stderr, "Syncing with upstream...")
@@ -144,7 +191,7 @@ func runServe(cmd *cobra.Command, stdout, stderr io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("parsing upstream: %w", err)
 		}
-		remoteDB := backend.NewRemoteDB(token, upOrg, upDB, cfg.ForkOrg, cfg.ForkDB, cfg.ResolveMode())
+		remoteDB = newRemoteWorkflowDB(token, upOrg, upDB, cfg.ForkOrg, cfg.ForkDB, cfg.ResolveMode())
 		db = remoteDB
 
 		sp := style.StartSpinner(stderr, "Syncing fork with upstream...")
@@ -158,8 +205,8 @@ func runServe(cmd *cobra.Command, stdout, stderr io.Writer) error {
 	// Build LoadDiff callback based on backend type.
 	loadDiff := func(branch string) (string, error) {
 		if cfg.ResolveBackend() != federation.BackendLocal {
-			if rdb, ok := db.(*backend.RemoteDB); ok {
-				return rdb.Diff(branch)
+			if remoteDB != nil {
+				return remoteDB.Diff(branch)
 			}
 			return "", fmt.Errorf("diff view requires local backend")
 		}
@@ -210,7 +257,7 @@ func runServe(cmd *cobra.Command, stdout, stderr io.Writer) error {
 		CloseUpstreamPR:   closeUpstreamPRCallback(cfg),
 	})
 
-	server := api.New(client)
+	server := newSelfHostedAPIServer(client)
 
 	scoreboardCache := api.NewScoreboardCache(db, 5*time.Minute)
 	server.SetScoreboard(scoreboardCache)
@@ -240,7 +287,7 @@ func runServe(cmd *cobra.Command, stdout, stderr io.Writer) error {
 	addr := fmt.Sprintf(":%d", port)
 	slog.Info("server started", "mode", "self-sovereign", "addr", addr)
 	srv := &http.Server{Addr: addr, Handler: handler, MaxHeaderBytes: 1 << 20} //nolint:gosec // bind addr is user-controlled via --port flag
-	return listenAndServeGraceful(srv)
+	return serveListen(srv)
 }
 
 func runServeHosted(cmd *cobra.Command, stdout, _ io.Writer) error {
@@ -287,7 +334,7 @@ func runServeHosted(cmd *cobra.Command, stdout, _ io.Writer) error {
 	apiServer := api.NewHostedWorkspace(hosted.NewClientFunc(), hosted.NewWorkspaceFunc())
 
 	// Public read-only RemoteDB against hop/wl-commons (no token needed).
-	publicDB := backend.NewRemoteDB("", "hop", "wl-commons", "hop", "wl-commons", "")
+	publicDB := newHostedPublicDB()
 
 	// Scoreboard cache.
 	scoreboardCache := api.NewScoreboardCache(publicDB, 5*time.Minute)
@@ -334,13 +381,13 @@ func runServeHosted(cmd *cobra.Command, stdout, _ io.Writer) error {
 	slog.Info("server started", "mode", "hosted", "addr", addr)
 	slog.Info("nango configured", "integration_id", nangoClient.IntegrationID())
 	srv := &http.Server{Addr: addr, Handler: handler, MaxHeaderBytes: 1 << 20} //nolint:gosec // bind addr is user-controlled via --port flag
-	return listenAndServeGraceful(srv)
+	return serveListen(srv)
 }
 
 // newDetailRefresh returns a refresh callback for the scoreboard detail cache.
 func newDetailRefresh(db commons.DB) func() ([]byte, error) {
 	return func() ([]byte, error) {
-		entries, err := commons.QueryScoreboardDetail(db, 100)
+		entries, err := queryScoreboardDetailEntries(db, 100)
 		if err != nil {
 			return nil, err
 		}
@@ -351,7 +398,7 @@ func newDetailRefresh(db commons.DB) func() ([]byte, error) {
 // newDumpRefresh returns a refresh callback for the scoreboard dump cache.
 func newDumpRefresh(db commons.DB) func() ([]byte, error) {
 	return func() ([]byte, error) {
-		dump, err := commons.QueryScoreboardDump(db)
+		dump, err := queryScoreboardDumpData(db)
 		if err != nil {
 			return nil, err
 		}
@@ -369,10 +416,9 @@ type pendingItemsCache struct {
 
 func newPendingItemsCache(upstreamOrg, db string, interval time.Duration) *pendingItemsCache {
 	c := &pendingItemsCache{stop: make(chan struct{})}
-	provider := remote.NewDoltHubProvider("")
 
 	refresh := func() {
-		states, err := provider.ListPendingWantedIDs(upstreamOrg, db)
+		states, err := listPendingWantedStates(upstreamOrg, db, "")
 		if err != nil {
 			slog.Warn("pending items refresh failed", "error", err)
 			return

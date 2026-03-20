@@ -31,6 +31,7 @@ type fakeDB struct {
 	leaderboardCSV  string            // CSV response for leaderboard aggregation query
 	leaderSkillsCSV string            // CSV response for leaderboard skills query
 	results         map[string]string // generic: sql substring -> CSV output
+	queryErrors     map[string]error  // generic: sql substring -> error
 }
 
 func newFakeDB() *fakeDB {
@@ -45,6 +46,13 @@ func newFakeDB() *fakeDB {
 func (f *fakeDB) Query(sql, ref string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	// Generic errors map takes precedence (used by outage/error-path tests).
+	for key, err := range f.queryErrors {
+		if strings.Contains(sql, key) {
+			return "", err
+		}
+	}
 
 	// Generic results map takes priority (used by scoreboard tests).
 	for key, val := range f.results {
@@ -473,6 +481,75 @@ func TestHostedPublic_ReadsPendingOnlyForkItem(t *testing.T) {
 	}
 }
 
+func TestBrowse_DefaultViewTreatsOmittedViewAsMine(t *testing.T) {
+	mainDB := newFakeDB()
+	forkDB := newFakeDB()
+	forkDB.branches["wl/alice/w-new"] = true
+	forkDB.branches["wl/bob/w-other"] = true
+	forkDB.branchItems["wl/alice/w-new"] = map[string]*fakeItem{
+		"w-new": {
+			id:          "w-new",
+			title:       "My pending task",
+			project:     "gascity",
+			typ:         "docs",
+			priority:    1,
+			postedBy:    "alice",
+			status:      "open",
+			effortLevel: "small",
+		},
+	}
+	forkDB.branchItems["wl/bob/w-other"] = map[string]*fakeItem{
+		"w-other": {
+			id:          "w-other",
+			title:       "Someone else's task",
+			project:     "gascity",
+			typ:         "docs",
+			priority:    2,
+			postedBy:    "bob",
+			status:      "open",
+			effortLevel: "small",
+		},
+	}
+
+	client := sdk.New(sdk.ClientConfig{
+		DB:        mainDB,
+		RigHandle: "alice",
+		Mode:      "pr",
+		LoadPendingDetail: func(wantedID string, pending sdk.PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error) {
+			return commons.QueryFullDetailAsOf(forkDB, wantedID, pending.Branch)
+		},
+		ListPendingItems: func() (map[string][]sdk.PendingItem, error) {
+			return map[string][]sdk.PendingItem{
+				"w-new": {{
+					RigHandle: "alice",
+					Status:    "open",
+					Branch:    "wl/alice/w-new",
+				}},
+				"w-other": {{
+					RigHandle: "bob",
+					Status:    "open",
+					Branch:    "wl/bob/w-other",
+				}},
+			}, nil
+		},
+	})
+
+	ts := httptest.NewServer(New(client))
+	defer ts.Close()
+
+	var browse BrowseResponse
+	r := getJSON(t, ts, "/api/wanted", &browse)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 browse, got %d", r.StatusCode)
+	}
+	if len(browse.Items) != 1 || browse.Items[0].ID != "w-new" {
+		t.Fatalf("default browse = %+v, want only alice branch item", browse.Items)
+	}
+	if browse.Items[0].PendingCount != 1 {
+		t.Fatalf("pending_count = %d, want 1", browse.Items[0].PendingCount)
+	}
+}
+
 func TestDetailNotFound(t *testing.T) {
 	db := newFakeDB()
 	ts := newTestServer(db, "wild-west")
@@ -557,6 +634,50 @@ func TestUnclaim(t *testing.T) {
 	}
 	if resp.Detail.Item.Status != "open" {
 		t.Errorf("expected open, got %s", resp.Detail.Item.Status)
+	}
+}
+
+func TestDone_Handler(t *testing.T) {
+	db := newFakeDB()
+	db.items["w-1"] = &fakeItem{
+		id:          "w-1",
+		title:       "Fix bug",
+		status:      "claimed",
+		claimedBy:   "alice",
+		postedBy:    "bob",
+		effortLevel: "medium",
+	}
+
+	ts := newTestServer(db, "wild-west")
+	defer ts.Close()
+
+	var resp MutationResponse
+	r := postJSON(t, ts, "/api/wanted/w-1/done", `{"evidence":"https://example.com/pr/1"}`, &resp)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", r.StatusCode)
+	}
+	if resp.Detail == nil || resp.Detail.Item == nil {
+		t.Fatal("expected detail in response")
+	}
+	if resp.Detail.Item.Status != "in_review" {
+		t.Errorf("expected in_review, got %s", resp.Detail.Item.Status)
+	}
+}
+
+func TestDone_Handler_RequiresEvidence(t *testing.T) {
+	db := newFakeDB()
+	db.items["w-1"] = &fakeItem{id: "w-1", title: "Fix bug", status: "claimed", claimedBy: "alice", postedBy: "bob", effortLevel: "medium"}
+
+	ts := newTestServer(db, "wild-west")
+	defer ts.Close()
+
+	var resp ErrorResponse
+	r := postJSON(t, ts, "/api/wanted/w-1/done", `{}`, &resp)
+	if r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", r.StatusCode)
+	}
+	if !strings.Contains(resp.Error, "evidence is required") {
+		t.Errorf("unexpected error: %s", resp.Error)
 	}
 }
 
@@ -687,6 +808,38 @@ func TestSaveSettingsInvalidMode(t *testing.T) {
 	r := doRequest(t, ts, "PUT", "/api/settings", `{"mode":"invalid"}`, &resp)
 	if r.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", r.StatusCode)
+	}
+}
+
+func TestPost_Handler_RequiresTitle(t *testing.T) {
+	db := newFakeDB()
+	ts := newTestServer(db, "wild-west")
+	defer ts.Close()
+
+	var resp ErrorResponse
+	r := postJSON(t, ts, "/api/wanted", `{}`, &resp)
+	if r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", r.StatusCode)
+	}
+	if !strings.Contains(resp.Error, "title is required") {
+		t.Errorf("unexpected error: %s", resp.Error)
+	}
+}
+
+func TestUpdate_Handler_NoFields(t *testing.T) {
+	db := newFakeDB()
+	db.items["w-1"] = &fakeItem{id: "w-1", title: "Fix bug", status: "open", postedBy: "alice", effortLevel: "medium"}
+
+	ts := newTestServer(db, "wild-west")
+	defer ts.Close()
+
+	var resp ErrorResponse
+	r := doRequest(t, ts, "PATCH", "/api/wanted/w-1", `{}`, &resp)
+	if r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", r.StatusCode)
+	}
+	if !strings.Contains(resp.Error, "no fields to update") {
+		t.Errorf("unexpected error: %s", resp.Error)
 	}
 }
 
@@ -862,5 +1015,202 @@ func TestAcceptUpstream_Handler_NotFound(t *testing.T) {
 	r := postJSON(t, ts, "/api/wanted/w-nonexistent/accept-upstream", `{"rig_handle":"charlie"}`, &resp)
 	if r.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", r.StatusCode)
+	}
+}
+
+func TestRejectUpstream_Handler(t *testing.T) {
+	db := newFakeDB()
+	db.items["w-1"] = &fakeItem{id: "w-1", title: "Fix bug", status: "open", priority: 1, postedBy: "bob", effortLevel: "medium"}
+
+	closedPR := ""
+	client := sdk.New(sdk.ClientConfig{
+		DB:        db,
+		RigHandle: "alice",
+		Mode:      "wild-west",
+		ListPendingItems: func() (map[string][]sdk.PendingItem, error) {
+			return map[string][]sdk.PendingItem{
+				"w-1": {{
+					RigHandle: "charlie",
+					Status:    "in_review",
+					PRURL:     "https://example.com/pr/1",
+				}},
+			}, nil
+		},
+		CloseUpstreamPR: func(prURL string) error {
+			closedPR = prURL
+			return nil
+		},
+	})
+	srv := New(client)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	var resp map[string]string
+	r := postJSON(t, ts, "/api/wanted/w-1/reject-upstream", `{"rig_handle":"charlie"}`, &resp)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", r.StatusCode)
+	}
+	if resp["status"] != "rejected" {
+		t.Errorf("expected rejected, got %s", resp["status"])
+	}
+	if closedPR != "https://example.com/pr/1" {
+		t.Errorf("closed PR = %q", closedPR)
+	}
+}
+
+func TestRejectUpstream_Handler_MissingRigHandle(t *testing.T) {
+	db := newFakeDB()
+	ts := newTestServer(db, "wild-west")
+	defer ts.Close()
+
+	var resp ErrorResponse
+	r := postJSON(t, ts, "/api/wanted/w-1/reject-upstream", `{}`, &resp)
+	if r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", r.StatusCode)
+	}
+	if !strings.Contains(resp.Error, "rig_handle is required") {
+		t.Errorf("unexpected error: %s", resp.Error)
+	}
+}
+
+func TestCloseUpstream_Handler(t *testing.T) {
+	db := newFakeDB()
+	db.items["w-1"] = &fakeItem{id: "w-1", title: "Fix bug", status: "open", priority: 1, postedBy: "bob", effortLevel: "medium"}
+
+	closedPR := ""
+	client := sdk.New(sdk.ClientConfig{
+		DB:        db,
+		RigHandle: "alice",
+		Mode:      "wild-west",
+		ListPendingItems: func() (map[string][]sdk.PendingItem, error) {
+			return map[string][]sdk.PendingItem{
+				"w-1": {{
+					RigHandle:   "charlie",
+					Status:      "in_review",
+					CompletedBy: "charlie",
+					Evidence:    "proof",
+					PRURL:       "https://example.com/pr/1",
+				}},
+			}, nil
+		},
+		CloseUpstreamPR: func(prURL string) error {
+			closedPR = prURL
+			return nil
+		},
+	})
+	srv := New(client)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	var resp MutationResponse
+	r := postJSON(t, ts, "/api/wanted/w-1/close-upstream", `{"rig_handle":"charlie"}`, &resp)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", r.StatusCode)
+	}
+	if resp.Detail == nil || resp.Detail.Item == nil {
+		t.Fatal("expected detail in response")
+	}
+	if resp.Detail.Item.Status != "completed" {
+		t.Errorf("expected completed, got %s", resp.Detail.Item.Status)
+	}
+	if closedPR != "https://example.com/pr/1" {
+		t.Errorf("closed PR = %q", closedPR)
+	}
+}
+
+func TestCloseUpstream_Handler_MissingRigHandle(t *testing.T) {
+	db := newFakeDB()
+	ts := newTestServer(db, "wild-west")
+	defer ts.Close()
+
+	var resp ErrorResponse
+	r := postJSON(t, ts, "/api/wanted/w-1/close-upstream", `{}`, &resp)
+	if r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", r.StatusCode)
+	}
+	if !strings.Contains(resp.Error, "rig_handle is required") {
+		t.Errorf("unexpected error: %s", resp.Error)
+	}
+}
+
+func TestApplyBranch_Handler(t *testing.T) {
+	db := newFakeDB()
+	client := sdk.New(sdk.ClientConfig{DB: db, RigHandle: "alice", Mode: "wild-west"})
+	srv := New(client)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	var resp map[string]string
+	r := postJSON(t, ts, "/api/branches/apply/wl/alice/w-1", "", &resp)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", r.StatusCode)
+	}
+	if resp["status"] != "applied" {
+		t.Errorf("expected applied, got %s", resp["status"])
+	}
+}
+
+func TestDiscardBranch_Handler(t *testing.T) {
+	db := newFakeDB()
+	client := sdk.New(sdk.ClientConfig{DB: db, RigHandle: "alice", Mode: "wild-west"})
+	srv := New(client)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	var resp map[string]string
+	r := doRequest(t, ts, "DELETE", "/api/branches/wl/alice/w-1", "", &resp)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", r.StatusCode)
+	}
+	if resp["status"] != "discarded" {
+		t.Errorf("expected discarded, got %s", resp["status"])
+	}
+}
+
+func TestSubmitPR_Handler(t *testing.T) {
+	db := newFakeDB()
+	client := sdk.New(sdk.ClientConfig{
+		DB:        db,
+		RigHandle: "alice",
+		Mode:      "pr",
+		CreatePR: func(_ string) (string, error) {
+			return "https://example.com/pr/42", nil
+		},
+	})
+	srv := New(client)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	var resp PRResponse
+	r := postJSON(t, ts, "/api/branches/pr/wl/alice/w-1", "", &resp)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", r.StatusCode)
+	}
+	if resp.URL != "https://example.com/pr/42" {
+		t.Errorf("expected PR URL, got %s", resp.URL)
+	}
+}
+
+func TestBranchDiff_Handler(t *testing.T) {
+	db := newFakeDB()
+	client := sdk.New(sdk.ClientConfig{
+		DB:        db,
+		RigHandle: "alice",
+		Mode:      "pr",
+		LoadDiff: func(_ string) (string, error) {
+			return "+added line", nil
+		},
+	})
+	srv := New(client)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	var resp DiffResponse
+	r := getJSON(t, ts, "/api/branches/diff/wl/alice/w-1", &resp)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", r.StatusCode)
+	}
+	if resp.Diff != "+added line" {
+		t.Errorf("expected diff, got %q", resp.Diff)
 	}
 }

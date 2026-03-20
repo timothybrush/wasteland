@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestSessionStore_CreateAndGet(t *testing.T) {
@@ -36,6 +37,25 @@ func TestSessionStore_GetMissing(t *testing.T) {
 	}
 }
 
+func TestSessionStore_GetExpiredSession(t *testing.T) {
+	store := &SessionStore{
+		sessions: map[string]*UserSession{
+			"expired": {
+				ID:           "expired",
+				ConnectionID: "conn-1",
+				CreatedAt:    time.Now().Add(-sessionTTL - time.Minute),
+			},
+		},
+	}
+
+	if _, ok := store.Get("expired"); ok {
+		t.Fatal("expected expired session to be evicted")
+	}
+	if _, ok := store.sessions["expired"]; ok {
+		t.Fatal("expected expired session to be deleted from store")
+	}
+}
+
 func TestSessionStore_Delete(t *testing.T) {
 	store := NewSessionStore()
 	id, _ := store.Create("conn-123")
@@ -53,6 +73,21 @@ func TestSessionStore_UniqueIDs(t *testing.T) {
 	id2, _ := store.Create("conn-2")
 	if id1 == id2 {
 		t.Error("expected unique session IDs")
+	}
+}
+
+func TestGenerateSessionID_Format(t *testing.T) {
+	id, err := generateSessionID()
+	if err != nil {
+		t.Fatalf("generateSessionID() error = %v", err)
+	}
+	if len(id) != 64 {
+		t.Fatalf("len(id) = %d, want 64", len(id))
+	}
+	for _, ch := range id {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
+			t.Fatalf("generateSessionID() produced non-hex char %q in %q", string(ch), id)
+		}
 	}
 }
 

@@ -7,13 +7,25 @@ import (
 	"os/exec"
 
 	bubbletea "github.com/charmbracelet/bubbletea"
-	"github.com/gastownhall/wasteland/internal/backend"
 	"github.com/gastownhall/wasteland/internal/commons"
 	"github.com/gastownhall/wasteland/internal/federation"
 	"github.com/gastownhall/wasteland/internal/sdk"
 	"github.com/gastownhall/wasteland/internal/style"
 	"github.com/gastownhall/wasteland/internal/tui"
 	"github.com/spf13/cobra"
+)
+
+type teaProgram interface {
+	Run() (bubbletea.Model, error)
+}
+
+var (
+	newTUIModel = func(cfg tui.Config) bubbletea.Model {
+		return tui.New(cfg)
+	}
+	newTeaProgram = func(model bubbletea.Model, opts ...bubbletea.ProgramOption) teaProgram {
+		return bubbletea.NewProgram(model, opts...)
+	}
 )
 
 func newTUICmd(stdout, stderr io.Writer) *cobra.Command {
@@ -34,12 +46,15 @@ func runTUI(cmd *cobra.Command, _, stderr io.Writer) error {
 		return hintWrap(err)
 	}
 
-	var db commons.DB
+	var (
+		db       commons.DB
+		remoteDB remoteWorkflowDB
+	)
 	if cfg.ResolveBackend() == federation.BackendLocal {
 		if err := requireDolt(); err != nil {
 			return err
 		}
-		localDB := backend.NewLocalDB(cfg.LocalDir, cfg.ResolveMode())
+		localDB := newLocalWorkflowDB(cfg.LocalDir, cfg.ResolveMode())
 		db = localDB
 
 		// Sync before launching the TUI.
@@ -61,7 +76,7 @@ func runTUI(cmd *cobra.Command, _, stderr io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("parsing upstream: %w", err)
 		}
-		remoteDB := backend.NewRemoteDB(commons.DoltHubToken(), upOrg, upDB, cfg.ForkOrg, cfg.ForkDB, cfg.ResolveMode())
+		remoteDB = newRemoteWorkflowDB(commons.DoltHubToken(), upOrg, upDB, cfg.ForkOrg, cfg.ForkDB, cfg.ResolveMode())
 		db = remoteDB
 
 		sp := style.StartSpinner(stderr, "Syncing fork with upstream...")
@@ -75,8 +90,8 @@ func runTUI(cmd *cobra.Command, _, stderr io.Writer) error {
 	// Build LoadDiff callback based on backend type.
 	loadDiff := func(branch string) (string, error) {
 		if cfg.ResolveBackend() != federation.BackendLocal {
-			if rdb, ok := db.(*backend.RemoteDB); ok {
-				return rdb.Diff(branch)
+			if remoteDB != nil {
+				return remoteDB.Diff(branch)
 			}
 			return "", fmt.Errorf("diff view requires local backend")
 		}
@@ -127,7 +142,7 @@ func runTUI(cmd *cobra.Command, _, stderr io.Writer) error {
 		CloseUpstreamPR:   closeUpstreamPRCallback(cfg),
 	})
 
-	m := tui.New(tui.Config{
+	m := newTUIModel(tui.Config{
 		Client:       client,
 		RigHandle:    cfg.RigHandle,
 		Upstream:     cfg.Upstream,
@@ -140,7 +155,7 @@ func runTUI(cmd *cobra.Command, _, stderr io.Writer) error {
 		JoinedAt:     cfg.JoinedAt.Format("2006-01-02"),
 	})
 
-	p := bubbletea.NewProgram(m, bubbletea.WithAltScreen())
+	p := newTeaProgram(m, bubbletea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("TUI error: %w", err)
 	}

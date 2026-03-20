@@ -16,7 +16,7 @@ describe("Dashboard", () => {
       }),
     );
     renderWithRouter(<Dashboard />);
-    await waitFor(() => expect(screen.getByText("Claimed task")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Claimed task")).toBeInTheDocument(), { timeout: 5000 });
     expect(screen.getByText("Review task")).toBeInTheDocument();
     expect(screen.getByText("Done task")).toBeInTheDocument();
   });

@@ -54,11 +54,6 @@ func parseQueryFilter(r *http.Request) commons.BrowseFilter {
 		sort = commons.SortAlpha
 	}
 
-	view := q.Get("view")
-	if view == "" {
-		view = "all"
-	}
-
 	return commons.BrowseFilter{
 		Status:   q.Get("status"),
 		Project:  q.Get("project"),
@@ -67,7 +62,7 @@ func parseQueryFilter(r *http.Request) commons.BrowseFilter {
 		Limit:    parseIntParam(r, "limit", 50),
 		Search:   q.Get("search"),
 		Sort:     sort,
-		View:     view,
+		View:     q.Get("view"),
 		Long:     q.Get("long") == "true",
 	}
 }

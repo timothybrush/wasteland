@@ -86,7 +86,7 @@ func runAccept(cmd *cobra.Command, stdout, _ io.Writer, wantedID string, quality
 		return err
 	}
 
-	client, err := newSDKClient(wlCfg, noPush)
+	client, err := newCommandClient(wlCfg, noPush)
 	if err != nil {
 		return err
 	}

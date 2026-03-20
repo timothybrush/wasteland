@@ -75,3 +75,9 @@ func TestClientIP_RemoteAddr(t *testing.T) {
 		t.Fatalf("clientIP = %q, want %q", got, "5.6.7.8")
 	}
 }
+
+func TestRateLimiter_Stop_Idempotent(_ *testing.T) {
+	rl := NewRateLimiter(1, 1, time.Minute)
+	rl.Stop()
+	rl.Stop()
+}

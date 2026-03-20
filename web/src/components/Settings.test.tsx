@@ -1,13 +1,18 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { setActiveUpstream } from "../api/client";
 import { makeConfigResponse, mockFetch, renderWithRouter } from "../test-utils";
 import { Settings } from "./Settings";
 
 type FetchFn = (url: string, init?: RequestInit) => object;
 
 let cleanupFetch: () => void;
-afterEach(() => cleanupFetch?.());
+afterEach(() => {
+  setActiveUpstream(null);
+  localStorage.removeItem("wl_active");
+  cleanupFetch?.();
+});
 
 describe("Settings", () => {
   it("loads config on mount", async () => {
@@ -21,6 +26,7 @@ describe("Settings", () => {
   });
 
   it("save calls saveSettings()", async () => {
+    setActiveUpstream("hop/wl-commons");
     const fetchFn = vi.fn<FetchFn>((url) => {
       if (url.includes("/api/config")) return makeConfigResponse();
       return {};
@@ -37,6 +43,7 @@ describe("Settings", () => {
   });
 
   it("sync calls sync()", async () => {
+    setActiveUpstream("hop/wl-commons");
     const fetchFn = vi.fn<FetchFn>((url) => {
       if (url.includes("/api/config")) return makeConfigResponse();
       return {};
@@ -52,6 +59,7 @@ describe("Settings", () => {
   });
 
   it("shows saving state", async () => {
+    setActiveUpstream("hop/wl-commons");
     let resolveSettings: (v: unknown) => void;
     cleanupFetch = mockFetch((url) => {
       if (url.includes("/api/config")) return makeConfigResponse();

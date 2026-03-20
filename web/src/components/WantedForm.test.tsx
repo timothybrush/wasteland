@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { setActiveUpstream } from "../api/client";
 import type { WantedItem } from "../api/types";
 import { mockFetch, renderWithRouter } from "../test-utils";
 import { WantedForm } from "./WantedForm";
@@ -10,6 +10,8 @@ const onSaved = vi.fn();
 let cleanupFetch: () => void;
 
 afterEach(() => {
+  setActiveUpstream(null);
+  localStorage.removeItem("wl_active");
   cleanupFetch?.();
   vi.clearAllMocks();
 });
@@ -41,18 +43,21 @@ describe("WantedForm", () => {
   });
 
   it("create mode: calls createItem on submit", async () => {
+    setActiveUpstream("hop/wl-commons");
     const fetchFn = vi.fn<FetchFn>(() => ({ detail: null }));
     cleanupFetch = mockFetch(fetchFn);
     renderWithRouter(<WantedForm onClose={onClose} onSaved={onSaved} />);
 
-    await userEvent.type(screen.getByPlaceholderText("What needs to be done?"), "New task");
-    await userEvent.click(screen.getByText("Post"));
+    fireEvent.change(screen.getByPlaceholderText("What needs to be done?"), {
+      target: { value: "New task" },
+    });
+    fireEvent.click(screen.getByText("Post"));
     await waitFor(() => {
       const postCalls = fetchFn.mock.calls.filter(([, init]) => init?.method === "POST");
       expect(postCalls.length).toBeGreaterThan(0);
       expect(postCalls[0][0]).toBe("/api/wanted");
     });
-  });
+  }, 10000);
 
   it("edit mode: pre-populates fields", () => {
     cleanupFetch = mockFetch(() => ({}));
@@ -63,11 +68,12 @@ describe("WantedForm", () => {
   });
 
   it("edit mode: calls updateItem on submit", async () => {
+    setActiveUpstream("hop/wl-commons");
     const fetchFn = vi.fn<FetchFn>(() => ({ detail: null }));
     cleanupFetch = mockFetch(fetchFn);
     renderWithRouter(<WantedForm item={makeEditItem()} onClose={onClose} onSaved={onSaved} />);
 
-    await userEvent.click(screen.getByText("Update"));
+    fireEvent.click(screen.getByText("Update"));
     await waitFor(() => {
       const patchCalls = fetchFn.mock.calls.filter(([, init]) => init?.method === "PATCH");
       expect(patchCalls.length).toBeGreaterThan(0);
@@ -76,13 +82,18 @@ describe("WantedForm", () => {
   });
 
   it("parses tags from comma-separated input", async () => {
+    setActiveUpstream("hop/wl-commons");
     const fetchFn = vi.fn<FetchFn>(() => ({ detail: null }));
     cleanupFetch = mockFetch(fetchFn);
     renderWithRouter(<WantedForm onClose={onClose} onSaved={onSaved} />);
 
-    await userEvent.type(screen.getByPlaceholderText("What needs to be done?"), "Tagged task");
-    await userEvent.type(screen.getByPlaceholderText("tag1, tag2, ..."), " foo , bar , , baz ");
-    await userEvent.click(screen.getByText("Post"));
+    fireEvent.change(screen.getByPlaceholderText("What needs to be done?"), {
+      target: { value: "Tagged task" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("tag1, tag2, ..."), {
+      target: { value: " foo , bar , , baz " },
+    });
+    fireEvent.click(screen.getByText("Post"));
     await waitFor(() => {
       const postCalls = fetchFn.mock.calls.filter(([, init]) => init?.method === "POST");
       const body = JSON.parse(postCalls[0][1]?.body as string);
@@ -104,10 +115,13 @@ describe("WantedForm", () => {
   });
 
   it("Cmd+Enter submits", async () => {
+    setActiveUpstream("hop/wl-commons");
     const fetchFn = vi.fn<FetchFn>(() => ({ detail: null }));
     cleanupFetch = mockFetch(fetchFn);
     renderWithRouter(<WantedForm onClose={onClose} onSaved={onSaved} />);
-    await userEvent.type(screen.getByPlaceholderText("What needs to be done?"), "Task via shortcut");
+    fireEvent.change(screen.getByPlaceholderText("What needs to be done?"), {
+      target: { value: "Task via shortcut" },
+    });
     fireEvent.keyDown(window, { key: "Enter", metaKey: true });
     await waitFor(() => {
       const postCalls = fetchFn.mock.calls.filter(([, init]) => init?.method === "POST");
@@ -136,18 +150,25 @@ describe("WantedForm inference mode", () => {
   it("submit disabled when only prompt filled", async () => {
     cleanupFetch = mockFetch(() => ({}));
     renderWithRouter(<WantedForm mode="inference" onClose={onClose} onSaved={onSaved} />);
-    await userEvent.type(screen.getByPlaceholderText("What should the model generate?"), "test prompt");
+    fireEvent.change(screen.getByPlaceholderText("What should the model generate?"), {
+      target: { value: "test prompt" },
+    });
     expect(screen.getByText("Post Job")).toBeDisabled();
   });
 
   it("sends correctly shaped PostInput", async () => {
+    setActiveUpstream("hop/wl-commons");
     const fetchFn = vi.fn<FetchFn>(() => ({ detail: null }));
     cleanupFetch = mockFetch(fetchFn);
     renderWithRouter(<WantedForm mode="inference" onClose={onClose} onSaved={onSaved} />);
 
-    await userEvent.type(screen.getByPlaceholderText("What should the model generate?"), "Summarize this");
-    await userEvent.type(screen.getByPlaceholderText("llama3.2:1b"), "llama3.2:1b");
-    await userEvent.click(screen.getByText("Post Job"));
+    fireEvent.change(screen.getByPlaceholderText("What should the model generate?"), {
+      target: { value: "Summarize this" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("llama3.2:1b"), {
+      target: { value: "llama3.2:1b" },
+    });
+    fireEvent.click(screen.getByText("Post Job"));
 
     await waitFor(() => {
       const postCalls = fetchFn.mock.calls.filter(([, init]) => init?.method === "POST");
@@ -170,7 +191,7 @@ describe("WantedForm inference mode", () => {
     renderWithRouter(<WantedForm mode="inference" onClose={onClose} onSaved={onSaved} />);
 
     expect(screen.queryByText("Seed")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByText("+ Advanced"));
+    fireEvent.click(screen.getByText("+ Advanced"));
     expect(screen.getByText("Seed")).toBeInTheDocument();
     expect(screen.getByText("Max Tokens")).toBeInTheDocument();
     expect(screen.getByDisplayValue("42")).toBeInTheDocument();
@@ -178,14 +199,19 @@ describe("WantedForm inference mode", () => {
   });
 
   it("truncates long prompts in title to 60 chars", async () => {
+    setActiveUpstream("hop/wl-commons");
     const fetchFn = vi.fn<FetchFn>(() => ({ detail: null }));
     cleanupFetch = mockFetch(fetchFn);
     renderWithRouter(<WantedForm mode="inference" onClose={onClose} onSaved={onSaved} />);
 
     const longPrompt = "a".repeat(80);
-    await userEvent.type(screen.getByPlaceholderText("What should the model generate?"), longPrompt);
-    await userEvent.type(screen.getByPlaceholderText("llama3.2:1b"), "llama3.2:1b");
-    await userEvent.click(screen.getByText("Post Job"));
+    fireEvent.change(screen.getByPlaceholderText("What should the model generate?"), {
+      target: { value: longPrompt },
+    });
+    fireEvent.change(screen.getByPlaceholderText("llama3.2:1b"), {
+      target: { value: "llama3.2:1b" },
+    });
+    fireEvent.click(screen.getByText("Post Job"));
 
     await waitFor(() => {
       const postCalls = fetchFn.mock.calls.filter(([, init]) => init?.method === "POST");

@@ -86,6 +86,18 @@ func TestHandleConnect_ForkRegistrar_HappyPath(t *testing.T) {
 	}
 }
 
+func TestDoltHubForkRegistrar_ValidationWarnings(t *testing.T) {
+	registrar := &DoltHubForkRegistrar{}
+
+	if warning := registrar.EnsureForkAndRegister("", "hop/wl-commons", "alice-org", "wl-commons", "alice", "Alice", "alice@example.com"); !strings.Contains(warning, "no API key available") {
+		t.Fatalf("warning = %q", warning)
+	}
+
+	if warning := registrar.EnsureForkAndRegister("token", "bad-upstream", "alice-org", "wl-commons", "alice", "Alice", "alice@example.com"); !strings.Contains(warning, `invalid upstream "bad-upstream"`) {
+		t.Fatalf("warning = %q", warning)
+	}
+}
+
 func TestHandleConnect_ForkRegistrar_Warning(t *testing.T) {
 	fake := &fakeForkRegistrar{warning: "fork failed: timeout"}
 	_, ts := setupTestServer(t, "test-token", fake)

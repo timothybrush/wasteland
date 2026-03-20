@@ -250,7 +250,7 @@ func TestCommonsData_ValidTypes(t *testing.T) {
 
 	valid := map[string]bool{
 		"feature": true, "bug": true, "design": true,
-		"rfc": true, "docs": true, "research": true, "community": true,
+		"rfc": true, "docs": true, "research": true, "community": true, "inference": true,
 	}
 	for _, row := range rows[1:] {
 		if len(row) == 0 {

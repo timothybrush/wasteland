@@ -5,6 +5,10 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/gastownhall/wasteland/internal/commons"
+	"github.com/gastownhall/wasteland/internal/federation"
 )
 
 func TestReviewRequiresNoMoreThanOneArg(t *testing.T) {
@@ -203,6 +207,70 @@ func TestSubmitPRReview(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunReview_RemoteListAndLocalDiff(t *testing.T) {
+	t.Run("remote list", func(t *testing.T) {
+		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+		saveTestConfig(t, &federation.Config{
+			Upstream:  "hop/wl-commons",
+			ForkOrg:   "alice",
+			ForkDB:    "wl-commons",
+			RigHandle: "alice",
+			Backend:   federation.BackendRemote,
+			JoinedAt:  time.Now(),
+		})
+		withOpenDBFromConfigOverride(t, func(*federation.Config) (commons.DB, error) {
+			return scriptedDB{
+				branchesFunc: func(string) ([]string, error) { return []string{"wl/alice/w-1"}, nil },
+			}, nil
+		})
+
+		var stdout bytes.Buffer
+		if err := runReview(commandWithWasteland("hop/wl-commons"), &stdout, &bytes.Buffer{}, "", false, false, false, false); err != nil {
+			t.Fatalf("runReview(remote list) error = %v", err)
+		}
+		if out := stdout.String(); !strings.Contains(out, "Review branches:") || !strings.Contains(out, "wl/alice/w-1") {
+			t.Fatalf("output = %q", out)
+		}
+	})
+
+	t.Run("local diff", func(t *testing.T) {
+		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+		saveTestConfig(t, &federation.Config{
+			Upstream:  "hop/wl-commons",
+			ForkOrg:   "alice",
+			ForkDB:    "wl-commons",
+			LocalDir:  t.TempDir(),
+			RigHandle: "alice",
+			Backend:   federation.BackendLocal,
+			JoinedAt:  time.Now(),
+		})
+		installFakeDolt(t, `#!/bin/sh
+set -eu
+case "$*" in
+  "remote -v")
+    printf 'origin\thttps://example/origin (fetch)\n'
+    ;;
+  "diff main...wl/alice/w-1")
+    printf 'full diff\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+`)
+
+		var stdout bytes.Buffer
+		cmd := commandWithWasteland("hop/wl-commons")
+		_ = cmd.Flags().Set("local-db", "true")
+		if err := runReview(cmd, &stdout, &bytes.Buffer{}, "wl/alice/w-1", false, false, false, false); err != nil {
+			t.Fatalf("runReview(local diff) error = %v", err)
+		}
+		if out := stdout.String(); !strings.Contains(out, "full diff") {
+			t.Fatalf("output = %q", out)
+		}
+	})
 }
 
 func TestPRApprovalStatus(t *testing.T) {

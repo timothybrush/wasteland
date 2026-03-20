@@ -11,6 +11,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var queryLeaderboard = commons.QueryLeaderboard
+
 func newLeaderboardCmd(stdout, stderr io.Writer) *cobra.Command {
 	var limit int
 
@@ -57,7 +59,7 @@ func runLeaderboard(cmd *cobra.Command, stdout, _ io.Writer, limit int) error {
 			return fmt.Errorf("syncing with upstream: %w", syncErr)
 		}
 	}
-	entries, err := commons.QueryLeaderboard(db, limit)
+	entries, err := queryLeaderboard(db, limit)
 	if err != nil {
 		return fmt.Errorf("querying leaderboard: %w", err)
 	}

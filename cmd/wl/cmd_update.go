@@ -98,7 +98,7 @@ func runUpdate(cmd *cobra.Command, stdout, _ io.Writer, wantedID, title, descrip
 		return err
 	}
 
-	client, err := newSDKClient(wlCfg, noPush)
+	client, err := newCommandClient(wlCfg, noPush)
 	if err != nil {
 		return err
 	}

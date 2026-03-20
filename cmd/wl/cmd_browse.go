@@ -166,13 +166,7 @@ func runBrowseLocal(stdout, stderr io.Writer, cfg *federation.Config, filter com
 	sp.Stop()
 
 	db := openDB(cfg.LocalDir)
-	client := sdk.New(sdk.ClientConfig{
-		DB:                db,
-		RigHandle:         cfg.RigHandle,
-		Mode:              cfg.ResolveMode(),
-		LoadPendingDetail: pendingDetailLoaderCallback(cfg),
-		ListPendingItems:  listPendingItemsFromPRs(cfg),
-	})
+	client := sdk.New(newBrowseClientConfig(cfg, db))
 
 	result, err := client.Browse(filter)
 	if err != nil {
@@ -191,12 +185,13 @@ func runBrowseRemote(stdout, _ io.Writer, cfg *federation.Config, filter commons
 		return err
 	}
 	client := sdk.New(sdk.ClientConfig{
-		DB:                db,
-		RigHandle:         cfg.RigHandle,
-		Mode:              cfg.ResolveMode(),
-		LoadPendingDetail: pendingDetailLoaderCallback(cfg),
-		ListPendingItems:  listPendingItemsFromPRs(cfg),
+		DB:        db,
+		RigHandle: cfg.RigHandle,
+		Mode:      cfg.ResolveMode(),
 	})
+	if cfg.ResolveMode() == federation.ModePR {
+		client = sdk.New(newBrowseClientConfig(cfg, db))
+	}
 
 	result, err := client.Browse(filter)
 	if err != nil {
@@ -207,6 +202,19 @@ func runBrowseRemote(stdout, _ io.Writer, cfg *federation.Config, filter commons
 		return renderBrowseJSON(stdout, result)
 	}
 	return renderBrowseSummaries(stdout, result, filter.Long)
+}
+
+func newBrowseClientConfig(cfg *federation.Config, db commons.DB) sdk.ClientConfig {
+	clientCfg := sdk.ClientConfig{
+		DB:        db,
+		RigHandle: cfg.RigHandle,
+		Mode:      cfg.ResolveMode(),
+	}
+	if cfg.ResolveMode() == federation.ModePR {
+		clientCfg.LoadPendingDetail = pendingDetailLoaderCallback(cfg)
+		clientCfg.ListPendingItems = listPendingItemsFromPRs(cfg)
+	}
+	return clientCfg
 }
 
 func renderBrowseSummaries(stdout io.Writer, result *sdk.BrowseResult, long bool) error {

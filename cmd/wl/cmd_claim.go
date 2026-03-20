@@ -48,7 +48,7 @@ func runClaim(cmd *cobra.Command, stdout, _ io.Writer, wantedID string, noPush b
 		return err
 	}
 
-	client, err := newSDKClient(wlCfg, noPush)
+	client, err := newCommandClient(wlCfg, noPush)
 	if err != nil {
 		return err
 	}

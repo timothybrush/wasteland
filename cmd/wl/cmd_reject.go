@@ -50,7 +50,7 @@ func runReject(cmd *cobra.Command, stdout, _ io.Writer, wantedID, reason string,
 		return err
 	}
 
-	client, err := newSDKClient(wlCfg, noPush)
+	client, err := newCommandClient(wlCfg, noPush)
 	if err != nil {
 		return err
 	}

@@ -45,7 +45,7 @@ func runUnclaim(cmd *cobra.Command, stdout, _ io.Writer, wantedID string, noPush
 		return err
 	}
 
-	client, err := newSDKClient(wlCfg, noPush)
+	client, err := newCommandClient(wlCfg, noPush)
 	if err != nil {
 		return err
 	}

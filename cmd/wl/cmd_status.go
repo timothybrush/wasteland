@@ -41,7 +41,7 @@ func runStatus(cmd *cobra.Command, stdout, _ io.Writer, wantedID string) error {
 		return err
 	}
 
-	client, err := newSDKClient(wlCfg, false)
+	client, err := newCommandClient(wlCfg, false)
 	if err != nil {
 		return err
 	}

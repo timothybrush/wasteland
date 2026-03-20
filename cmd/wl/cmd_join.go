@@ -18,6 +18,39 @@ import (
 
 const defaultUpstream = "hop/wl-commons"
 
+var joinWithProvider = func(
+	stdout io.Writer,
+	provider remote.Provider,
+	store federation.ConfigStore,
+	upstream, forkOrg, handle, displayName, email, version string,
+	signed, direct bool,
+) (*federation.JoinResult, error) {
+	svc := federation.NewServiceWith(provider, store)
+	svc.OnProgress = func(step string) {
+		fmt.Fprintf(stdout, "  %s\n", step)
+	}
+	return svc.Join(upstream, forkOrg, handle, displayName, email, version, signed, direct)
+}
+
+type joinRemoteProvider interface {
+	Fork(fromOrg, fromDB, toOrg string) error
+	CreatePR(forkOrg, upstreamOrg, db, fromBranch, title, body string) (string, error)
+	DatabaseURL(org, db string) string
+}
+
+type joinRemoteDB interface {
+	Exec(branch, ref string, allowEmpty bool, stmts ...string) error
+}
+
+var (
+	newJoinRemoteProvider = func(token string) joinRemoteProvider {
+		return remote.NewDoltHubProvider(token)
+	}
+	newJoinRemoteDB = func(token, upstreamOrg, upstreamDB, forkOrg, forkDB, mode string) joinRemoteDB {
+		return backend.NewRemoteDB(token, upstreamOrg, upstreamDB, forkOrg, forkDB, mode)
+	}
+)
+
 func newJoinCmd(stdout, stderr io.Writer) *cobra.Command {
 	var (
 		handle      string
@@ -181,14 +214,9 @@ func runJoin(stdout, stderr io.Writer, upstream, handle, displayName, email, for
 
 	wlVersion := "dev"
 
-	svc := federation.NewServiceWith(provider, store)
-	svc.OnProgress = func(step string) {
-		fmt.Fprintf(stdout, "  %s\n", step)
-	}
-
 	dbName := upstream[strings.Index(upstream, "/")+1:]
 	fmt.Fprintf(stdout, "Joining wasteland %s (fork to %s/%s)...\n", upstream, forkOrg, dbName)
-	result, err := svc.Join(upstream, forkOrg, handle, displayName, email, wlVersion, signed, direct)
+	result, err := joinWithProvider(stdout, provider, store, upstream, forkOrg, handle, displayName, email, wlVersion, signed, direct)
 	if err != nil {
 		var forkErr *remote.ForkRequiredError
 		if errors.As(err, &forkErr) {
@@ -258,7 +286,7 @@ func runJoinRemote(stdout, _ io.Writer, upstream, handle, displayName, email, fo
 		email = gitConfigValue("user.email")
 	}
 
-	provider := remote.NewDoltHubProvider(token)
+	provider := newJoinRemoteProvider(token)
 
 	fmt.Fprintf(stdout, "Joining wasteland %s (fork to %s/%s, remote mode)...\n", upstream, forkOrg, upstreamDB)
 
@@ -275,7 +303,7 @@ func runJoinRemote(stdout, _ io.Writer, upstream, handle, displayName, email, fo
 
 	// 2. Register rig via RemoteDB.Exec on a registration branch.
 	fmt.Fprintf(stdout, "  Registering rig via API...\n")
-	db := backend.NewRemoteDB(token, upstreamOrg, upstreamDB, forkOrg, upstreamDB, federation.ModePR)
+	db := newJoinRemoteDB(token, upstreamOrg, upstreamDB, forkOrg, upstreamDB, federation.ModePR)
 	branch := fmt.Sprintf("wl/register/%s", handle)
 	regSQL := commons.BuildRegistrationSQL(handle, forkOrg, displayName, email, "dev")
 	if err := db.Exec(branch, "", false, regSQL); err != nil {

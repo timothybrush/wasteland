@@ -213,3 +213,27 @@ func TestJSONToCSV_JSONFieldValues(t *testing.T) {
 		t.Errorf("row = %q, expected JSON array to be quoted CSV field", lines[1])
 	}
 }
+
+func TestJSONToCSV_FallsBackToFirstRowColumns(t *testing.T) {
+	t.Parallel()
+	input := `{
+		"query_execution_status": "Success",
+		"schema_fragment": [],
+		"rows": [
+			{"id": "w-001", "title": "Fallback", "priority": 2}
+		]
+	}`
+
+	got, err := JSONToCSV([]byte(input))
+	if err != nil {
+		t.Fatalf("JSONToCSV error: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(got), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %q", len(lines), got)
+	}
+	if lines[0] != "id,title,priority" {
+		t.Errorf("header = %q, want fallback column order", lines[0])
+	}
+}

@@ -87,6 +87,35 @@ func TestRootModel_TypeKey(t *testing.T) {
 	}
 }
 
+func TestRootModel_InitAndWindowResize(t *testing.T) {
+	m := New(Config{RigHandle: "test", Upstream: "test/db"})
+
+	if cmd := m.Init(); cmd == nil {
+		t.Fatal("Init() should return initial fetch cmd")
+	}
+
+	result, _ := m.Update(bubbletea.WindowSizeMsg{Width: 120, Height: 40})
+	m2 := result.(Model)
+	if m2.width != 120 || m2.height != 40 {
+		t.Fatalf("root size = %dx%d, want 120x40", m2.width, m2.height)
+	}
+	if m2.bar.width != 120 {
+		t.Fatalf("status bar width = %d, want 120", m2.bar.width)
+	}
+	if m2.browse.width != 120 || m2.browse.height != 39 {
+		t.Fatalf("browse size = %dx%d, want 120x39", m2.browse.width, m2.browse.height)
+	}
+	if m2.detail.width != 120 || m2.detail.height != 39 {
+		t.Fatalf("detail size = %dx%d, want 120x39", m2.detail.width, m2.detail.height)
+	}
+	if m2.me.width != 120 || m2.me.height != 39 {
+		t.Fatalf("me size = %dx%d, want 120x39", m2.me.width, m2.me.height)
+	}
+	if m2.settings.width != 120 || m2.settings.height != 39 {
+		t.Fatalf("settings size = %dx%d, want 120x39", m2.settings.width, m2.settings.height)
+	}
+}
+
 // newDetailForTest creates a detail model with a loaded item for mutation testing.
 func newDetailForTest(status, postedBy, claimedBy, mode string) Model {
 	m := New(Config{

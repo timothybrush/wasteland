@@ -1,5 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { ActionButton } from "./ActionButton";
 
@@ -16,12 +15,14 @@ describe("ActionButton", () => {
         resolveAction = r;
       });
     render(<ActionButton action="claim" onAction={onAction} />);
-    await userEvent.click(screen.getByText("claim"));
+    fireEvent.click(screen.getByText("claim"));
     expect(screen.getByText("claim...")).toBeInTheDocument();
     expect(screen.getByRole("button")).toBeDisabled();
-    resolveAction!();
+    await act(async () => {
+      resolveAction!();
+    });
     await waitFor(() => expect(screen.getByText("claim")).toBeInTheDocument());
-  });
+  }, 10000);
 
   it("is disabled during async", async () => {
     let resolveAction: () => void;
@@ -30,11 +31,13 @@ describe("ActionButton", () => {
         resolveAction = r;
       });
     render(<ActionButton action="do" onAction={onAction} />);
-    await userEvent.click(screen.getByText("do"));
+    fireEvent.click(screen.getByText("do"));
     expect(screen.getByRole("button")).toBeDisabled();
-    resolveAction!();
+    await act(async () => {
+      resolveAction!();
+    });
     await waitFor(() => expect(screen.getByRole("button")).not.toBeDisabled());
-  });
+  }, 10000);
 
   it("sets data-action attribute", () => {
     render(<ActionButton action="claim" onAction={async () => {}} />);

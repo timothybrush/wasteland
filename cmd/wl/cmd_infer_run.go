@@ -9,6 +9,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var inferRun = inference.Run
+
 func newInferRunCmd(stdout, stderr io.Writer) *cobra.Command {
 	var (
 		noPush    bool
@@ -57,7 +59,7 @@ func runInferRun(cmd *cobra.Command, stdout, _ io.Writer, wantedID string, noPus
 		return err
 	}
 
-	client, err := newSDKClient(wlCfg, noPush)
+	client, err := newCommandClient(wlCfg, noPush)
 	if err != nil {
 		return err
 	}
@@ -99,7 +101,7 @@ func runInferRun(cmd *cobra.Command, stdout, _ io.Writer, wantedID string, noPus
 	}
 
 	// Step 3: Run inference.
-	result, err := inference.Run(job)
+	result, err := inferRun(job)
 	if err != nil {
 		if !skipClaim {
 			// Release claim so another worker can retry.

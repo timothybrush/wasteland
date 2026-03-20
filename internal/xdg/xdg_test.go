@@ -69,3 +69,25 @@ func TestConfigHome_UsesHomeDir(t *testing.T) {
 		t.Errorf("ConfigHome() = %q, want %q", got, want)
 	}
 }
+
+func TestConfigHome_FallbackWhenHomeUnset(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", "")
+
+	got := ConfigHome()
+	want := filepath.Join(os.TempDir(), "wasteland")
+	if got != want {
+		t.Errorf("ConfigHome() = %q, want %q", got, want)
+	}
+}
+
+func TestDataHome_FallbackWhenHomeUnset(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("HOME", "")
+
+	got := DataHome()
+	want := filepath.Join(os.TempDir(), "wasteland-data")
+	if got != want {
+		t.Errorf("DataHome() = %q, want %q", got, want)
+	}
+}

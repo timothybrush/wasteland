@@ -1049,6 +1049,80 @@ func TestBrowse_AddsPendingOnlyItem_MineView(t *testing.T) {
 	}
 }
 
+func TestBrowse_DefaultViewTreatsEmptyAsMine(t *testing.T) {
+	db := &laggyBranchDB{fakeDB: newFakeDB()}
+	db.branches["wl/alice/w-new"] = true
+	db.branches["wl/bob/w-other"] = true
+	db.branchItems["wl/alice/w-new"] = map[string]*fakeItem{
+		"w-new": {
+			ID:          "w-new",
+			Title:       "My task",
+			Project:     "gascity",
+			Type:        "docs",
+			Priority:    1,
+			PostedBy:    "alice",
+			Status:      "open",
+			EffortLevel: "small",
+		},
+	}
+	db.branchItems["wl/bob/w-other"] = map[string]*fakeItem{
+		"w-other": {
+			ID:          "w-other",
+			Title:       "Someone else's task",
+			Project:     "gascity",
+			Type:        "docs",
+			Priority:    2,
+			PostedBy:    "bob",
+			Status:      "open",
+			EffortLevel: "small",
+		},
+	}
+
+	c := New(ClientConfig{
+		DB:        db,
+		RigHandle: "alice",
+		Mode:      "pr",
+		ListPendingItems: func() (map[string][]PendingItem, error) {
+			return map[string][]PendingItem{
+				"w-new": {{
+					RigHandle: "alice",
+					Status:    "open",
+					Branch:    "wl/alice/w-new",
+				}},
+				"w-other": {{
+					RigHandle: "bob",
+					Status:    "open",
+					Branch:    "wl/bob/w-other",
+				}},
+			}, nil
+		},
+	})
+
+	result, err := c.Browse(commons.BrowseFilter{Priority: -1})
+	if err != nil {
+		t.Fatalf("Browse: %v", err)
+	}
+
+	var foundMine, foundOther bool
+	for _, item := range result.Items {
+		switch item.ID {
+		case "w-new":
+			foundMine = true
+		case "w-other":
+			foundOther = true
+		}
+	}
+	if !foundMine {
+		t.Fatal("w-new not found in default view results")
+	}
+	if foundOther {
+		t.Fatal("w-other should not be present when view is omitted")
+	}
+	if result.PendingIDs["w-other"] != 0 {
+		t.Fatalf("expected no pending count for foreign item in default view, got %d", result.PendingIDs["w-other"])
+	}
+}
+
 func TestDetail_UpstreamPRs(t *testing.T) {
 	db := newFakeDB()
 	db.seedItem(fakeItem{ID: "w-1", Title: "Fix bug", Status: "open", Priority: 1, PostedBy: "alice", EffortLevel: "medium"})

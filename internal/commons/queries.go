@@ -268,23 +268,31 @@ func ApplyBranchOverrides(db DB, items []WantedSummary, overrides []BranchOverri
 		if f.Status != "" && o.Status != f.Status {
 			continue
 		}
-		// Try main first; fall back to branch only if item not found on main.
-		item, err := QueryWantedDetail(db, o.WantedID)
-		if err != nil && strings.Contains(err.Error(), "not found") {
-			item, err = QueryWantedDetailAsOf(db, o.WantedID, o.Branch)
+		// Prefer branch data so filters and summaries reflect the effective state.
+		item, err := QueryWantedDetailAsOf(db, o.WantedID, o.Branch)
+		if err != nil {
+			item, err = QueryWantedDetail(db, o.WantedID)
 		}
-		if err == nil && matchesBrowseFilter(item, f) {
+		if err == nil {
+			effective := *item
+			effective.Status = o.Status
+			if o.ClaimedBy != "" {
+				effective.ClaimedBy = o.ClaimedBy
+			}
+			if !matchesBrowseFilter(&effective, f) {
+				continue
+			}
 			result = append(result, WantedSummary{
-				ID:          item.ID,
-				Title:       item.Title,
-				Description: item.Description,
-				Project:     item.Project,
-				Type:        item.Type,
-				Priority:    item.Priority,
-				PostedBy:    item.PostedBy,
-				ClaimedBy:   item.ClaimedBy,
+				ID:          effective.ID,
+				Title:       effective.Title,
+				Description: effective.Description,
+				Project:     effective.Project,
+				Type:        effective.Type,
+				Priority:    effective.Priority,
+				PostedBy:    effective.PostedBy,
+				ClaimedBy:   effective.ClaimedBy,
 				Status:      o.Status,
-				EffortLevel: item.EffortLevel,
+				EffortLevel: effective.EffortLevel,
 			})
 		}
 	}
@@ -477,37 +485,42 @@ func applyDashboardOverrides(db DB, items []WantedSummary, overrides []BranchOve
 		if applied[o.WantedID] || o.Status != statusFilter {
 			continue
 		}
-		item, err := QueryWantedDetail(db, o.WantedID)
+		item, err := QueryWantedDetailAsOf(db, o.WantedID, o.Branch)
 		if err != nil {
-			item, err = QueryWantedDetailAsOf(db, o.WantedID, o.Branch)
+			item, err = QueryWantedDetail(db, o.WantedID)
 		}
 		if err != nil {
 			continue
+		}
+		effective := *item
+		effective.Status = o.Status
+		if o.ClaimedBy != "" {
+			effective.ClaimedBy = o.ClaimedBy
 		}
 		// Check person filter.
 		match := false
 		switch personField {
 		case "claimed_by":
-			match = item.ClaimedBy == personValue || o.ClaimedBy == personValue
+			match = effective.ClaimedBy == personValue
 		case "posted_by":
-			match = item.PostedBy == personValue
+			match = effective.PostedBy == personValue
 		case "either":
-			match = item.PostedBy == personValue || item.ClaimedBy == personValue || o.ClaimedBy == personValue
+			match = effective.PostedBy == personValue || effective.ClaimedBy == personValue
 		}
 		if !match {
 			continue
 		}
 		result = append(result, WantedSummary{
-			ID:          item.ID,
-			Title:       item.Title,
-			Description: item.Description,
-			Project:     item.Project,
-			Type:        item.Type,
-			Priority:    item.Priority,
-			PostedBy:    item.PostedBy,
-			ClaimedBy:   item.ClaimedBy,
+			ID:          effective.ID,
+			Title:       effective.Title,
+			Description: effective.Description,
+			Project:     effective.Project,
+			Type:        effective.Type,
+			Priority:    effective.Priority,
+			PostedBy:    effective.PostedBy,
+			ClaimedBy:   effective.ClaimedBy,
 			Status:      o.Status,
-			EffortLevel: item.EffortLevel,
+			EffortLevel: effective.EffortLevel,
 		})
 	}
 
@@ -533,7 +546,7 @@ func BrowseWantedBranchAware(db DB, mode, rigHandle string, f BrowseFilter) ([]W
 
 	view := f.View
 	if view == "" {
-		view = "all"
+		view = "mine"
 	}
 
 	if view == "all" {

@@ -43,7 +43,7 @@ func runInferStatus(cmd *cobra.Command, stdout, _ io.Writer, wantedID string) er
 		return err
 	}
 
-	client, err := newSDKClient(wlCfg, false)
+	client, err := newCommandClient(wlCfg, false)
 	if err != nil {
 		return err
 	}

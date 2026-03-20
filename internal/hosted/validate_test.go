@@ -33,3 +33,27 @@ func TestValidateUpstream(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateConnectFields(t *testing.T) {
+	if err := validateConnectFields("alice", "alice-org", "wl-commons", "hop/wl-commons"); err != nil {
+		t.Fatalf("validateConnectFields() error = %v", err)
+	}
+	if err := validateConnectFields("bad handle", "alice-org", "wl-commons", "hop/wl-commons"); err == nil {
+		t.Fatal("expected invalid rig_handle error")
+	}
+	if err := validateConnectFields("alice", "alice-org", "bad/db", "hop/wl-commons"); err == nil {
+		t.Fatal("expected invalid fork_db error")
+	}
+}
+
+func TestValidateJoinFields(t *testing.T) {
+	if err := validateJoinFields("alice-org", "wl-commons", "hop/wl-commons"); err != nil {
+		t.Fatalf("validateJoinFields() error = %v", err)
+	}
+	if err := validateJoinFields("bad org", "wl-commons", "hop/wl-commons"); err == nil {
+		t.Fatal("expected invalid fork_org error")
+	}
+	if err := validateJoinFields("alice-org", "wl-commons", "bad-upstream"); err == nil {
+		t.Fatal("expected invalid upstream error")
+	}
+}

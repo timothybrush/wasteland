@@ -10,6 +10,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var inferModelExists = inference.ModelExists
+
 func newInferPostCmd(stdout, stderr io.Writer) *cobra.Command {
 	var (
 		prompt    string
@@ -51,7 +53,7 @@ Examples:
 
 func runInferPost(cmd *cobra.Command, stdout, _ io.Writer, prompt, model string, seed, maxTokens int, noPush bool) error {
 	// Best-effort model existence check.
-	if exists, err := inference.ModelExists(model); err == nil && !exists {
+	if exists, err := inferModelExists(model); err == nil && !exists {
 		fmt.Fprintf(stdout, "  %s model %q not found in local ollama (job will still be posted)\n",
 			style.Warning.Render(style.IconWarn), model)
 	}
@@ -75,7 +77,7 @@ func runInferPost(cmd *cobra.Command, stdout, _ io.Writer, prompt, model string,
 		return hintWrap(err)
 	}
 
-	client, err := newSDKClient(wlCfg, noPush)
+	client, err := newCommandClient(wlCfg, noPush)
 	if err != nil {
 		return err
 	}

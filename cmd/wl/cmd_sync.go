@@ -1,9 +1,11 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 
 	"github.com/gastownhall/wasteland/internal/federation"
 	"github.com/gastownhall/wasteland/internal/style"
@@ -41,6 +43,12 @@ func runSync(cmd *cobra.Command, stdout, stderr io.Writer, dryRun bool) error {
 		return hintWrap(err)
 	}
 
+	// Sync is inherently a local-fork operation. If this wasteland has a local
+	// clone, prefer syncing it even when the global CLI default is remote mode.
+	if cfg.ResolveBackend() != federation.BackendLocal && cfg.LocalDir != "" {
+		cfg.Backend = federation.BackendLocal
+	}
+
 	// Remote mode: reads are always fresh from the DoltHub API.
 	if cfg.ResolveBackend() != federation.BackendLocal {
 		fmt.Fprintf(stdout, "Remote mode: reads are always fresh from the DoltHub API.\n")
@@ -75,10 +83,17 @@ func runSync(cmd *cobra.Command, stdout, stderr io.Writer, dryRun bool) error {
 		diffCmd.Stderr = stderr
 		// dolt diff exits non-zero when differences exist, so ignore the
 		// error when stdout captured output (meaning changes were found).
-		diffOut, _ := diffCmd.Output()
-		if len(diffOut) > 0 {
+		diffOut, diffErr := diffCmd.Output()
+		switch {
+		case len(diffOut) > 0:
 			fmt.Fprint(stdout, string(diffOut))
-		} else {
+		case diffErr != nil:
+			var exitErr *exec.ExitError
+			if errors.As(diffErr, &exitErr) && len(exitErr.Stderr) > 0 {
+				return fmt.Errorf("checking upstream diff: %s", strings.TrimSpace(string(exitErr.Stderr)))
+			}
+			return fmt.Errorf("checking upstream diff: %w", diffErr)
+		default:
 			fmt.Fprintf(stdout, "%s Already up to date.\n", style.Bold.Render("✓"))
 		}
 		return nil

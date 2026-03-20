@@ -168,6 +168,24 @@ func TestNangoClient_Defaults(t *testing.T) {
 	}
 }
 
+func TestNangoClient_Accessors(t *testing.T) {
+	client := NewNangoClient(NangoConfig{
+		BaseURL:       "https://nango.example",
+		SecretKey:     "server-secret",
+		IntegrationID: "custom-dolthub",
+	})
+
+	if got := client.BaseURL(); got != "https://nango.example" {
+		t.Fatalf("BaseURL() = %q, want https://nango.example", got)
+	}
+	if got := client.SecretKey(); got != "server-secret" {
+		t.Fatalf("SecretKey() = %q, want server-secret", got)
+	}
+	if got := client.IntegrationID(); got != "custom-dolthub" {
+		t.Fatalf("IntegrationID() = %q, want custom-dolthub", got)
+	}
+}
+
 func TestParseMetadata_NewFormat(t *testing.T) {
 	raw := json.RawMessage(`{
 		"rig_handle": "alice",

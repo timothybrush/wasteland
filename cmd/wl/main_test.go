@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -154,5 +156,23 @@ func TestVersionOutput(t *testing.T) {
 	}
 	if !bytes.Contains(stdout.Bytes(), []byte("wl")) {
 		t.Errorf("version output = %q, want to contain 'wl'", stdout.String())
+	}
+}
+
+func TestMainEntryPoint(t *testing.T) {
+	if os.Getenv("WL_TEST_MAIN") == "1" {
+		os.Args = []string{"wl", "version"}
+		main()
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestMainEntryPoint")
+	cmd.Env = append(os.Environ(), "WL_TEST_MAIN=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("subprocess error = %v, output = %s", err, output)
+	}
+	if !bytes.Contains(output, []byte("wl")) {
+		t.Fatalf("output = %q", output)
 	}
 }

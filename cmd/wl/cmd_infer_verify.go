@@ -10,6 +10,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var inferVerify = inference.Verify
+
 func newInferVerifyCmd(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "verify <wanted-id>",
@@ -43,7 +45,7 @@ func runInferVerify(cmd *cobra.Command, stdout, _ io.Writer, wantedID string) er
 		return err
 	}
 
-	client, err := newSDKClient(wlCfg, false)
+	client, err := newCommandClient(wlCfg, false)
 	if err != nil {
 		return err
 	}
@@ -95,5 +97,5 @@ func executeInferVerify(detail *sdk.DetailResult, wantedID string) (*inference.V
 		return nil, fmt.Errorf("decoding inference result from evidence: %w", err)
 	}
 
-	return inference.Verify(job, result)
+	return inferVerify(job, result)
 }

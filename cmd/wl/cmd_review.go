@@ -20,6 +20,23 @@ import (
 	"github.com/spf13/cobra"
 )
 
+type doltHubPRProvider interface {
+	CreatePR(forkOrg, upstreamOrg, db, fromBranch, title, body string) (string, error)
+	FindPR(upstreamOrg, db, forkOrg, fromBranch string) (prURL, prID string)
+	UpdatePR(upstreamOrg, db, prID, title, description string) error
+	ClosePR(upstreamOrg, db, prID string) error
+}
+
+var (
+	pushBranchToRemoteForce   = commons.PushBranchToRemoteForce
+	newGitHubPRClientFromPath = func(ghPath string) GitHubPRClient {
+		return newGHClient(ghPath)
+	}
+	newDoltHubPRProvider = func(token string) doltHubPRProvider {
+		return remote.NewDoltHubProvider(token)
+	}
+)
+
 func newReviewCmd(stdout, stderr io.Writer) *cobra.Command {
 	var (
 		jsonOut  bool
@@ -300,7 +317,7 @@ func runGitHubPR(stdout io.Writer, cfg *federation.Config, doltPath, branch, bas
 
 	// In GitHub mode, origin is already GitHub; force-push dolt branch there.
 	// Force is safe — this is a wl/* branch on the user's own fork.
-	if err := commons.PushBranchToRemoteForce(cfg.LocalDir, "origin", branch, true, stdout); err != nil {
+	if err := pushBranchToRemoteForce(cfg.LocalDir, "origin", branch, true, stdout); err != nil {
 		return fmt.Errorf("pushing to GitHub fork: %w", err)
 	}
 
@@ -315,7 +332,7 @@ func runGitHubPR(stdout io.Writer, cfg *federation.Config, doltPath, branch, bas
 	prTitle := fmt.Sprintf("[wl] %s", title)
 
 	// Create git-native branch on fork + cross-fork PR to upstream.
-	client := newGHClient(ghPath)
+	client := newGitHubPRClientFromPath(ghPath)
 	prURL, err := createGitHubPR(client, cfg.Upstream, cfg.ForkOrg, cfg.ForkDB, branch, prTitle, mdBuf.String(), stdout)
 	if err != nil {
 		return err
@@ -333,7 +350,7 @@ func runDoltHubPR(stdout io.Writer, cfg *federation.Config, doltPath, branch, ba
 
 	// Force-push dolt branch to origin.
 	// Force is safe — this is a wl/* branch on the user's own fork.
-	if err := commons.PushBranchToRemoteForce(cfg.LocalDir, "origin", branch, true, stdout); err != nil {
+	if err := pushBranchToRemoteForce(cfg.LocalDir, "origin", branch, true, stdout); err != nil {
 		return fmt.Errorf("pushing to DoltHub fork: %w", err)
 	}
 
@@ -354,7 +371,7 @@ func runDoltHubPR(stdout io.Writer, cfg *federation.Config, doltPath, branch, ba
 	}
 
 	// Create PR via DoltHub REST API, or update if one already exists.
-	provider := remote.NewDoltHubProvider(token)
+	provider := newDoltHubPRProvider(token)
 	prURL, err := provider.CreatePR(cfg.ForkOrg, upstreamOrg, db, branch, prTitle, mdBuf.String())
 	if err != nil {
 		if strings.Contains(err.Error(), "already exists") {
@@ -633,7 +650,7 @@ func createPRForBranchGitHub(cfg *federation.Config, doltPath, branch, base stri
 	}
 
 	// Force-push dolt branch to origin.
-	if err := commons.PushBranchToRemoteForce(cfg.LocalDir, "origin", branch, true, io.Discard); err != nil {
+	if err := pushBranchToRemoteForce(cfg.LocalDir, "origin", branch, true, io.Discard); err != nil {
 		return "", fmt.Errorf("pushing to GitHub fork: %w", err)
 	}
 
@@ -646,7 +663,7 @@ func createPRForBranchGitHub(cfg *federation.Config, doltPath, branch, base stri
 	title := wantedTitleFromBranch(doltPath, cfg.LocalDir, branch)
 	prTitle := fmt.Sprintf("[wl] %s", title)
 
-	client := newGHClient(ghPath)
+	client := newGitHubPRClientFromPath(ghPath)
 	return createGitHubPR(client, cfg.Upstream, cfg.ForkOrg, cfg.ForkDB, branch, prTitle, mdBuf.String(), io.Discard)
 }
 
@@ -657,7 +674,7 @@ func createPRForBranchDoltHub(cfg *federation.Config, doltPath, branch, base str
 	}
 
 	// Force-push dolt branch to origin.
-	if err := commons.PushBranchToRemoteForce(cfg.LocalDir, "origin", branch, true, io.Discard); err != nil {
+	if err := pushBranchToRemoteForce(cfg.LocalDir, "origin", branch, true, io.Discard); err != nil {
 		return "", fmt.Errorf("pushing to DoltHub fork: %w", err)
 	}
 
@@ -674,7 +691,7 @@ func createPRForBranchDoltHub(cfg *federation.Config, doltPath, branch, base str
 		return "", fmt.Errorf("parsing upstream: %w", err)
 	}
 
-	provider := remote.NewDoltHubProvider(token)
+	provider := newDoltHubPRProvider(token)
 	prURL, err := provider.CreatePR(cfg.ForkOrg, upstreamOrg, db, branch, prTitle, mdBuf.String())
 	if err != nil {
 		if strings.Contains(err.Error(), "already exists") {
@@ -725,7 +742,7 @@ func createPRForBranchRemote(cfg *federation.Config, cdb commons.DB, branch stri
 		}
 	}
 
-	provider := remote.NewDoltHubProvider(token)
+	provider := newDoltHubPRProvider(token)
 	prURL, err := provider.CreatePR(cfg.ForkOrg, upstreamOrg, db, branch, prTitle, prBody)
 	if err != nil {
 		if strings.Contains(err.Error(), "already exists") {
@@ -763,7 +780,7 @@ func checkPRForBranch(cfg *federation.Config, branch string) string {
 		if err != nil {
 			return ""
 		}
-		provider := remote.NewDoltHubProvider(token)
+		provider := newDoltHubPRProvider(token)
 		url, _ := provider.FindPR(upstreamOrg, db, cfg.ForkOrg, branch)
 		return url
 	default:
@@ -796,7 +813,7 @@ func closePRForBranch(cfg *federation.Config, branch string) error {
 		if err != nil {
 			return nil
 		}
-		provider := remote.NewDoltHubProvider(token)
+		provider := newDoltHubPRProvider(token)
 		_, prID := provider.FindPR(upstreamOrg, db, cfg.ForkOrg, branch)
 		if prID == "" {
 			return nil
@@ -848,8 +865,7 @@ func dolthubListPendingItems(cfg *federation.Config) func() (map[string][]sdk.Pe
 		if cached != nil && time.Since(cachedAt) < cacheTTL {
 			return cached, nil
 		}
-		provider := remote.NewDoltHubProvider(token)
-		states, err := provider.ListPendingWantedIDs(upstreamOrg, db)
+		states, err := listPendingWantedStates(upstreamOrg, db, token)
 		if err != nil {
 			return nil, err
 		}
@@ -1005,7 +1021,7 @@ func closeUpstreamPRCallback(cfg *federation.Config) func(string) error {
 		if err != nil {
 			return nil
 		}
-		provider := remote.NewDoltHubProvider(token)
+		provider := newDoltHubPRProvider(token)
 		return func(prURL string) error {
 			// Extract PR ID from URL like ".../pulls/123"
 			idx := strings.LastIndex(prURL, "/pulls/")

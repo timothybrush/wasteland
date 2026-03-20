@@ -59,7 +59,7 @@ export function BrowseList() {
 
   // Silent background poll — no loading spinner, no error toasts.
   useEffect(() => {
-    if (!hasLoadedRef.current) return;
+    if (loading || !hasLoadedRef.current) return;
     const id = setInterval(() => {
       if (document.hidden) return;
       browse(filter)
@@ -70,7 +70,7 @@ export function BrowseList() {
         .catch(() => {});
     }, 30_000);
     return () => clearInterval(id);
-  }, [filter, setSelection]);
+  }, [filter, loading, setSelection]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {

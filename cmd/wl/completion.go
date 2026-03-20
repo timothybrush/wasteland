@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -28,7 +30,7 @@ func completeWantedIDs(statusFilter string) func(*cobra.Command, []string, strin
 		if err != nil {
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
-		cacheKey := "wanted-" + statusFilter
+		cacheKey := completionCacheKey(cfg, "wanted-"+statusFilter)
 		if cached := readCompletionCache(cacheKey); cached != nil {
 			return cached, cobra.ShellCompDirectiveNoFileComp
 		}
@@ -53,7 +55,7 @@ func completeBranchNames(cmd *cobra.Command, args []string, _ string) ([]string,
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	cacheKey := "branches"
+	cacheKey := completionCacheKey(cfg, "branches")
 	if cached := readCompletionCache(cacheKey); cached != nil {
 		return cached, cobra.ShellCompDirectiveNoFileComp
 	}
@@ -90,35 +92,7 @@ func listWantedIDsRemote(cfg *federation.Config, statusFilter string) []string {
 	if err != nil {
 		return nil
 	}
-	lines := strings.Split(strings.TrimSpace(csv), "\n")
-	if len(lines) < 2 {
-		return nil
-	}
-	var items []string
-	for _, line := range lines[1:] {
-		fields := strings.SplitN(line, ",", 3)
-		if len(fields) < 1 {
-			continue
-		}
-		id := strings.TrimSpace(fields[0])
-		if id == "" {
-			continue
-		}
-		if len(fields) >= 2 {
-			title := strings.TrimSpace(fields[1])
-			if len(title) > 40 {
-				title = title[:40] + "..."
-			}
-			if len(fields) >= 3 {
-				pri := strings.TrimSpace(fields[2])
-				id += "\t" + "P" + pri + " " + title
-			} else {
-				id += "\t" + title
-			}
-		}
-		items = append(items, id)
-	}
-	return items
+	return formatWantedIDCompletions(csv)
 }
 
 // listWantedIDsWithTimeout queries wanted IDs with a 2-second timeout.
@@ -130,38 +104,7 @@ func listWantedIDsWithTimeout(dbDir, statusFilter string) []string {
 	}
 	query += " ORDER BY created_at DESC LIMIT 50"
 	out := doltQueryWithTimeout(dbDir, query, 2*time.Second)
-	if out == "" {
-		return nil
-	}
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) < 2 {
-		return nil
-	}
-	var items []string
-	for _, line := range lines[1:] {
-		fields := strings.SplitN(line, ",", 3)
-		if len(fields) < 1 {
-			continue
-		}
-		id := strings.TrimSpace(fields[0])
-		if id == "" {
-			continue
-		}
-		if len(fields) >= 2 {
-			title := strings.TrimSpace(fields[1])
-			if len(title) > 40 {
-				title = title[:40] + "..."
-			}
-			if len(fields) >= 3 {
-				pri := strings.TrimSpace(fields[2])
-				id += "\t" + "P" + pri + " " + title
-			} else {
-				id += "\t" + title
-			}
-		}
-		items = append(items, id)
-	}
-	return items
+	return formatWantedIDCompletions(out)
 }
 
 // listBranchesWithTimeout queries wl/* branches with a 2-second timeout.
@@ -227,7 +170,7 @@ func completeProjectNames(cmd *cobra.Command, _ []string, _ string) ([]string, c
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	cacheKey := "projects"
+	cacheKey := completionCacheKey(cfg, "projects")
 	if cached := readCompletionCache(cacheKey); cached != nil {
 		return cached, cobra.ShellCompDirectiveNoFileComp
 	}
@@ -294,4 +237,53 @@ func writeCompletionCache(key string, items []string) {
 		return
 	}
 	_ = os.WriteFile(filepath.Join(dir, key+".json"), data, 0o644)
+}
+
+func completionCacheKey(cfg *federation.Config, category string) string {
+	scope := category
+	if cfg != nil {
+		scope = strings.Join([]string{
+			category,
+			cfg.ResolveBackend(),
+			cfg.ResolveMode(),
+			cfg.Upstream,
+			cfg.LocalDir,
+			cfg.ForkOrg,
+			cfg.ForkDB,
+			cfg.RigHandle,
+		}, "|")
+	}
+	sum := sha1.Sum([]byte(scope))
+	return category + "-" + hex.EncodeToString(sum[:8])
+}
+
+func formatWantedIDCompletions(csv string) []string {
+	rows := wlParseCSV(csv)
+	if len(rows) < 2 {
+		return nil
+	}
+	var items []string
+	for _, fields := range rows[1:] {
+		if len(fields) == 0 {
+			continue
+		}
+		id := strings.TrimSpace(fields[0])
+		if id == "" {
+			continue
+		}
+		if len(fields) >= 2 {
+			title := strings.TrimSpace(fields[1])
+			if len(title) > 40 {
+				title = title[:40] + "..."
+			}
+			if len(fields) >= 3 {
+				pri := strings.TrimSpace(fields[2])
+				id += "\t" + "P" + pri + " " + title
+			} else {
+				id += "\t" + title
+			}
+		}
+		items = append(items, id)
+	}
+	return items
 }

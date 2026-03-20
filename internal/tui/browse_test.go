@@ -234,6 +234,45 @@ func TestBrowseUpdate_SearchMode(t *testing.T) {
 	}
 }
 
+func TestBrowseUpdate_SearchEnterAndEsc(t *testing.T) {
+	m := newBrowseModel()
+	m.loading = false
+	cfg := Config{RigHandle: "test"}
+
+	m, _ = m.update(keyMsg("/"), cfg)
+	for _, ch := range "claim" {
+		m, _ = m.update(keyMsg(string(ch)), cfg)
+	}
+	if got := m.search.Value(); got != "claim" {
+		t.Fatalf("search value = %q, want claim", got)
+	}
+
+	m, cmd := m.update(bubbletea.KeyMsg{Type: bubbletea.KeyEnter}, cfg)
+	if m.searchMode {
+		t.Fatal("search mode should be cleared after enter")
+	}
+	if cmd == nil {
+		t.Fatal("enter should return fetchBrowse cmd")
+	}
+	if !m.loading {
+		t.Fatal("enter should set loading")
+	}
+	if got := m.filter(cfg.RigHandle).Search; got != "claim" {
+		t.Fatalf("filter search = %q, want claim", got)
+	}
+
+	m.searchMode = true
+	m.search.Focus()
+	m.loading = false
+	m, cmd = m.update(bubbletea.KeyMsg{Type: bubbletea.KeyEsc}, cfg)
+	if m.searchMode {
+		t.Fatal("search mode should be cleared after esc")
+	}
+	if cmd != nil {
+		t.Fatal("esc should not return a command")
+	}
+}
+
 func TestBrowseView_StatusLabel(t *testing.T) {
 	m := newBrowseModel()
 	m.loading = false

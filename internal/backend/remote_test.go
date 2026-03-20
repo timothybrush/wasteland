@@ -92,6 +92,33 @@ func TestRemoteDB_Query_Branch(t *testing.T) {
 	}
 }
 
+func TestNewRemoteDBWithClient_AndDeleteRemoteBranch(t *testing.T) {
+	srv, cleanup := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		if !strings.Contains(r.URL.RawQuery, "CALL+DOLT_BRANCH%28%27-D%27%2C+%27wl%2Falice%2Fw-001%27%29") {
+			t.Fatalf("raw query = %q, want delete branch SQL", r.URL.RawQuery)
+		}
+		resp := map[string]string{"query_execution_status": "Success"}
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	defer cleanup()
+
+	client := srv.Client()
+	db := NewRemoteDBWithClient(client, "upstream-org", "wl-commons", "fork-org", "wl-commons", "pr")
+	if db.client != client {
+		t.Fatal("NewRemoteDBWithClient() should retain provided client")
+	}
+	if db.token != "" {
+		t.Fatalf("token = %q, want empty when using external client", db.token)
+	}
+
+	if err := db.DeleteRemoteBranch("wl/alice/w-001"); err != nil {
+		t.Fatalf("DeleteRemoteBranch() error = %v", err)
+	}
+}
+
 func TestRemoteDB_Exec(t *testing.T) {
 	srv, cleanup := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {

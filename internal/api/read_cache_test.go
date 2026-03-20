@@ -71,6 +71,22 @@ func TestReadCache_TTLExpiry(t *testing.T) {
 	}
 }
 
+func TestReadCache_GetStale_ReturnsExpiredData(t *testing.T) {
+	c := NewReadCache(10*time.Millisecond, 10)
+	_, _ = c.GetOrFetch("k", func() ([]byte, error) {
+		return []byte("stale"), nil
+	})
+
+	time.Sleep(20 * time.Millisecond)
+
+	if got := c.Get("k"); got != nil {
+		t.Fatalf("expected expired entry to miss fresh cache, got %q", got)
+	}
+	if got := c.GetStale("k"); string(got) != "stale" {
+		t.Fatalf("GetStale() = %q, want %q", got, "stale")
+	}
+}
+
 func TestReadCache_ConcurrentCoalescing(t *testing.T) {
 	c := NewReadCache(time.Minute, 10)
 	var fetchCount atomic.Int32

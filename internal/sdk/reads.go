@@ -57,18 +57,21 @@ func (c *Client) Browse(filter commons.BrowseFilter) (*BrowseResult, error) {
 
 	// In non-upstream views, merge pending PR state if the callback is set.
 	var upstreamItems map[string][]PendingItem
+	var visiblePendingItems map[string][]PendingItem
 	view := filter.View
 	if view == "" {
-		view = "all"
+		if c.mode == "pr" {
+			view = "mine"
+		} else {
+			view = "all"
+		}
 	}
 	if view != "upstream" && c.ListPendingItems != nil {
 		upstreamItems, err = c.ListPendingItems()
 		if err == nil {
+			visiblePendingItems = upstreamItems
 			if view == "mine" {
-				upstreamItems = filterPendingItemsForRig(upstreamItems, c.rigHandle)
-			}
-			for id, pending := range upstreamItems {
-				pendingIDs[id] += len(pending)
+				visiblePendingItems = filterPendingItemsForRig(upstreamItems, c.rigHandle)
 			}
 		}
 	}
@@ -81,13 +84,18 @@ func (c *Client) Browse(filter commons.BrowseFilter) (*BrowseResult, error) {
 		if len(pending) == 0 {
 			continue
 		}
+		if view == "mine" && pendingIDs[items[i].ID] == 0 && len(visiblePendingItems[items[i].ID]) == 0 {
+			continue
+		}
+		pendingIDs[items[i].ID] += len(pending)
 		overlayPendingClaimedBy(&items[i], pending)
 	}
 
-	for id, pending := range upstreamItems {
+	for id, pending := range visiblePendingItems {
 		if seen[id] || len(pending) == 0 {
 			continue
 		}
+		pendingIDs[id] += len(pending)
 		best := bestPendingState(pending)
 		if best.Branch == "" {
 			continue

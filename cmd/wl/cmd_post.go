@@ -92,7 +92,7 @@ func runPost(cmd *cobra.Command, stdout, _ io.Writer, title, description, projec
 		return hintWrap(err)
 	}
 
-	client, err := newSDKClient(wlCfg, noPush)
+	client, err := newCommandClient(wlCfg, noPush)
 	if err != nil {
 		return err
 	}
