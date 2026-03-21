@@ -24,7 +24,7 @@ LDFLAGS := -X main.version=$(VERSION) \
            -X main.date=$(BUILD_TIME) \
            -X main.inferEnabled=$(INFER_ENABLED)
 
-.PHONY: build build-go web check check-all lint fmt-check fmt vet test test-integration test-integration-offline test-cover cover install install-tools setup clean web-check web-test audit audit-web
+.PHONY: build build-go web check check-all lint fmt-check fmt vet test test-integration test-integration-offline test-cover cover install install-tools setup clean web-check web-test audit audit-web railway-sync-vars test-scripts
 
 ## web: build web UI (requires bun)
 web:
@@ -122,6 +122,14 @@ audit:
 ## audit-web: run web dependency audit
 audit-web:
 	cd web && bun audit
+
+## railway-sync-vars: preview Railway OTLP env sync from .env.production.example
+railway-sync-vars:
+	python3 scripts/railway_sync_vars.py --env-file .env.production.example --service wasteland --environment production --shared-env-var OTLP_SHARED_TOKEN --dry-run
+
+## test-scripts: run repository script unit tests
+test-scripts:
+	python3 -m unittest discover -s scripts -p 'test_*.py'
 
 ## help: show this help
 help:

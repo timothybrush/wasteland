@@ -9,3 +9,4 @@ web/dist/*
 web/coverage/
 web/*.tsbuildinfo
 docs/production-checklist.md
+__pycache__/

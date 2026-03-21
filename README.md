@@ -543,6 +543,30 @@ browser and server telemetry can share the same ingress token. Use
 `WL_BROWSER_OTLP_TRACES_TARGET` or `WL_BROWSER_OTLP_HEADERS` only when the
 browser path needs different routing from the server exporters.
 
+For Railway, the repo now includes a root
+[`.env.production.example`](./.env.production.example) template that Railway
+can suggest/import into the linked service. It keeps the real token out of git
+by referencing a shared Railway variable:
+
+```bash
+OTEL_EXPORTER_OTLP_HEADERS=X-OTLP-Shared-Token=${{shared.OTLP_SHARED_TOKEN}}
+WL_BROWSER_OTLP_HEADERS=X-OTLP-Shared-Token=${{shared.OTLP_SHARED_TOKEN}}
+```
+
+Sync it into Railway with the Railway GraphQL API. Export the live shared OTLP
+token locally first, then run:
+
+```bash
+export OTLP_SHARED_TOKEN=<shared-token>
+python3 scripts/railway_sync_vars.py --service wasteland --environment production --shared-env-var OTLP_SHARED_TOKEN --dry-run
+python3 scripts/railway_sync_vars.py --service wasteland --environment production --shared-env-var OTLP_SHARED_TOKEN --no-skip-deploys
+```
+
+The sync script uses `RAILWAY_TOKEN` or `RAILWAY_API_TOKEN`, auto-discovers the
+project when the token has a single match, and upserts both the shared Railway
+variable and the service-scoped OTLP variables. By default it stages changes
+with `skipDeploys`; pass `--no-skip-deploys` to roll them out immediately.
+
 ## Development
 
 ```bash

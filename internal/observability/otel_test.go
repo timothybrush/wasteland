@@ -3,8 +3,11 @@ package observability
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
@@ -141,5 +144,95 @@ func TestInit_RestoresProvidersWhenMetricExporterInitFails(t *testing.T) {
 	}
 	if got := otel.GetTextMapPropagator(); got != originalPropagator {
 		t.Fatal("Init() did not restore the original propagator")
+	}
+}
+
+func TestInit_ExportsTracesAndMetricsToConfiguredOTLPEndpoints(t *testing.T) {
+	originalTracerProvider := otel.GetTracerProvider()
+	originalMeterProvider := otel.GetMeterProvider()
+	originalPropagator := otel.GetTextMapPropagator()
+	t.Cleanup(func() {
+		otel.SetTextMapPropagator(originalPropagator)
+		otel.SetTracerProvider(originalTracerProvider)
+		otel.SetMeterProvider(originalMeterProvider)
+	})
+
+	type requestRecord struct {
+		path        string
+		sharedToken string
+		bodyLen     int
+	}
+
+	requests := make(chan requestRecord, 8)
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read collector body: %v", err)
+		}
+		requests <- requestRecord{
+			path:        r.URL.Path,
+			sharedToken: r.Header.Get("X-OTLP-Shared-Token"),
+			bodyLen:     len(body),
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer collector.Close()
+
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", collector.URL+"/v1/traces")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", collector.URL+"/v1/metrics")
+	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "X-OTLP-Shared-Token=abc123TOKEN")
+
+	shutdown, enabled, err := Init(context.Background(), Config{
+		ServiceName:      "wasteland-hosted",
+		ServiceNamespace: "wasteland",
+		ServiceVersion:   "test",
+		Environment:      "test",
+	})
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if !enabled {
+		t.Fatal("Init() enabled = false, want true")
+	}
+
+	tracer := otel.Tracer("test")
+	_, span := tracer.Start(context.Background(), "wasteland.otlp.proof")
+	span.End()
+
+	meter := otel.Meter("test")
+	counter, err := meter.Int64Counter("wasteland_otlp_proof_total")
+	if err != nil {
+		t.Fatalf("Int64Counter() error = %v", err)
+	}
+	counter.Add(context.Background(), 1)
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := shutdown(shutdownCtx); err != nil {
+		t.Fatalf("shutdown() error = %v", err)
+	}
+
+	seenPaths := map[string]bool{}
+	timeout := time.After(5 * time.Second)
+	for len(seenPaths) < 2 {
+		select {
+		case req := <-requests:
+			if req.sharedToken != "abc123TOKEN" {
+				t.Fatalf("collector shared token = %q, want %q", req.sharedToken, "abc123TOKEN")
+			}
+			if req.bodyLen == 0 {
+				t.Fatalf("collector body for %s was empty", req.path)
+			}
+			seenPaths[req.path] = true
+		case <-timeout:
+			t.Fatalf("timed out waiting for OTLP exports, saw %v", seenPaths)
+		}
+	}
+
+	if !seenPaths["/v1/traces"] {
+		t.Fatal("expected OTLP trace export to hit /v1/traces")
+	}
+	if !seenPaths["/v1/metrics"] {
+		t.Fatal("expected OTLP metrics export to hit /v1/metrics")
 	}
 }
