@@ -54,6 +54,7 @@ func TestBrowserTracesHandler_ProxiesPayload(t *testing.T) {
 		gotBody            []byte
 		gotContentType     string
 		gotContentEncoding string
+		gotSharedToken     string
 	)
 	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -61,6 +62,7 @@ func TestBrowserTracesHandler_ProxiesPayload(t *testing.T) {
 		}
 		gotContentType = r.Header.Get("Content-Type")
 		gotContentEncoding = r.Header.Get("Content-Encoding")
+		gotSharedToken = r.Header.Get("X-OTLP-Shared-Token")
 		var err error
 		gotBody, err = io.ReadAll(r.Body)
 		if err != nil {
@@ -73,6 +75,7 @@ func TestBrowserTracesHandler_ProxiesPayload(t *testing.T) {
 	defer collector.Close()
 
 	t.Setenv("WL_BROWSER_OTLP_TRACES_TARGET", collector.URL+"/v1/traces")
+	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "X-OTLP-Shared-Token=abc123TOKEN")
 
 	srv := New(nil)
 	ts := httptest.NewServer(srv)
@@ -100,6 +103,9 @@ func TestBrowserTracesHandler_ProxiesPayload(t *testing.T) {
 	}
 	if gotContentEncoding != "gzip" {
 		t.Fatalf("collector content-encoding = %q, want %q", gotContentEncoding, "gzip")
+	}
+	if gotSharedToken != "abc123TOKEN" {
+		t.Fatalf("collector shared token = %q, want %q", gotSharedToken, "abc123TOKEN")
 	}
 	if string(gotBody) != "trace-data" {
 		t.Fatalf("collector body = %q, want %q", string(gotBody), "trace-data")

@@ -522,8 +522,26 @@ All commands accept `--wasteland <org/db>` when multiple wastelands are joined a
 | `DOLTHUB_ORG` | Your DoltHub org/username (required for DoltHub provider) |
 | `DOLTHUB_SESSION_TOKEN` | DoltHub session token (alternative auth for REST fork API) |
 | `PORT` | Override default listen port for `wl serve` |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Hosted OTLP HTTP traces endpoint, e.g. `https://otel.cloud.gascityhall.com/v1/traces` |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | Hosted OTLP HTTP metrics endpoint, e.g. `https://otel.cloud.gascityhall.com/v1/metrics` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Static OTLP headers for hosted exporters, e.g. `X-OTLP-Shared-Token=<token>` |
+| `WL_BROWSER_OTLP_TRACES_TARGET` | Optional override for the server-side browser trace proxy target |
+| `WL_BROWSER_OTLP_HEADERS` | Optional override for static headers added by the browser trace proxy |
 | `XDG_CONFIG_HOME` | Override config dir (default `~/.config`) |
 | `XDG_DATA_HOME` | Override data dir (default `~/.local/share`) |
+
+For the shared Gas City collector, hosted Wasteland can use:
+
+```bash
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://otel.cloud.gascityhall.com/v1/traces
+OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=https://otel.cloud.gascityhall.com/v1/metrics
+OTEL_EXPORTER_OTLP_HEADERS=X-OTLP-Shared-Token=<shared-token>
+```
+
+The browser trace proxy reuses `OTEL_EXPORTER_OTLP_HEADERS` automatically, so
+browser and server telemetry can share the same ingress token. Use
+`WL_BROWSER_OTLP_TRACES_TARGET` or `WL_BROWSER_OTLP_HEADERS` only when the
+browser path needs different routing from the server exporters.
 
 ## Development
 

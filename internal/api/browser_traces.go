@@ -61,6 +61,11 @@ func (s *Server) handleBrowserTraces(w http.ResponseWriter, r *http.Request) {
 	if enc := r.Header.Get("Content-Encoding"); enc != "" {
 		req.Header.Set("Content-Encoding", enc)
 	}
+	for name, values := range observability.BrowserTraceProxyHeaders() {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
 
 	resp, err := browserTraceProxyClient.Do(req)
 	if err != nil {

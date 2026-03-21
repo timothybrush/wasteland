@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"net/http"
 	"net/url"
 	"os"
 	"strconv"
@@ -12,6 +13,7 @@ const (
 	BrowserTraceIngressPath        = "/api/telemetry/v1/traces"
 	defaultBrowserTraceSampleRatio = 0.1
 	browserTraceProxyTargetEnvVar  = "WL_BROWSER_OTLP_TRACES_TARGET"
+	browserTraceHeadersEnvVar      = "WL_BROWSER_OTLP_HEADERS"
 	browserTraceSampleRatioEnvVar  = "WL_BROWSER_OTEL_TRACES_SAMPLE_RATIO"
 )
 
@@ -60,6 +62,22 @@ func BrowserTraceProxyTarget() string {
 	return ""
 }
 
+// BrowserTraceProxyHeaders resolves static headers that should be forwarded to
+// the upstream collector for browser OTLP traces.
+func BrowserTraceProxyHeaders() http.Header {
+	for _, raw := range []string{
+		strings.TrimSpace(os.Getenv(browserTraceHeadersEnvVar)),
+		strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS")),
+		strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_HEADERS")),
+	} {
+		if raw == "" {
+			continue
+		}
+		return parseOTLPHeaders(raw)
+	}
+	return nil
+}
+
 func appendTracePath(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -74,4 +92,31 @@ func appendTracePath(raw string) string {
 	}
 	u.Path = strings.TrimRight(u.Path, "/") + "/v1/traces"
 	return u.String()
+}
+
+func parseOTLPHeaders(raw string) http.Header {
+	headers := http.Header{}
+	for _, pair := range strings.Split(raw, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		name, value, ok := strings.Cut(pair, "=")
+		if !ok {
+			continue
+		}
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
+		if name == "" || value == "" {
+			continue
+		}
+		if decoded, err := url.QueryUnescape(value); err == nil {
+			value = decoded
+		}
+		headers.Add(name, value)
+	}
+	if len(headers) == 0 {
+		return nil
+	}
+	return headers
 }

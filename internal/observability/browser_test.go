@@ -67,3 +67,35 @@ func TestBrowserTraceSampleRatio(t *testing.T) {
 		}
 	})
 }
+
+func TestBrowserTraceProxyHeaders(t *testing.T) {
+	t.Run("prefers explicit browser headers", func(t *testing.T) {
+		t.Setenv(browserTraceHeadersEnvVar, "X-OTLP-Shared-Token=browser-token")
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "X-OTLP-Shared-Token=trace-token")
+		t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "X-OTLP-Shared-Token=generic-token")
+		headers := BrowserTraceProxyHeaders()
+		if got := headers.Get("X-OTLP-Shared-Token"); got != "browser-token" {
+			t.Fatalf("BrowserTraceProxyHeaders() = %q, want explicit browser token", got)
+		}
+	})
+
+	t.Run("falls back to trace-specific and decodes values", func(t *testing.T) {
+		t.Setenv(browserTraceHeadersEnvVar, "")
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "Authorization=Bearer%20trace-token")
+		t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "")
+		headers := BrowserTraceProxyHeaders()
+		if got := headers.Get("Authorization"); got != "Bearer trace-token" {
+			t.Fatalf("BrowserTraceProxyHeaders() = %q, want decoded trace header", got)
+		}
+	})
+
+	t.Run("falls back to generic otlp headers", func(t *testing.T) {
+		t.Setenv(browserTraceHeadersEnvVar, "")
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "")
+		t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "X-OTLP-Shared-Token=generic-token")
+		headers := BrowserTraceProxyHeaders()
+		if got := headers.Get("X-OTLP-Shared-Token"); got != "generic-token" {
+			t.Fatalf("BrowserTraceProxyHeaders() = %q, want generic header", got)
+		}
+	})
+}
