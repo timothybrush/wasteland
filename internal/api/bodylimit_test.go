@@ -48,3 +48,30 @@ func TestMaxBytesBody_RejectsLargeBody(t *testing.T) {
 		t.Fatalf("large body: got %d, want 413", rec.Code)
 	}
 }
+
+func TestMaxBytesBodyByPath_UsesPerPathOverride(t *testing.T) {
+	called := false
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		_, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "read failed", http.StatusRequestEntityTooLarge)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := MaxBytesBodyByPath(16, map[string]int64{
+		"/api/telemetry/v1/traces": 128,
+	})(inner)
+	req := httptest.NewRequest(http.MethodPost, "/api/telemetry/v1/traces", strings.NewReader(strings.Repeat("x", 64)))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("override body: got %d, want 200", rec.Code)
+	}
+	if !called {
+		t.Fatal("expected inner handler to be called")
+	}
+}

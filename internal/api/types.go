@@ -148,6 +148,15 @@ type ConfigResponse struct {
 	Upstreams []UpstreamInfoJSON `json:"upstreams,omitempty"`
 }
 
+// RuntimeConfigResponse is the JSON response for GET /api/runtime-config.
+type RuntimeConfigResponse struct {
+	Environment string `json:"environment,omitempty"`
+
+	BrowserTracingEnabled   bool    `json:"browser_tracing_enabled"`
+	BrowserTraceEndpoint    string  `json:"browser_trace_endpoint,omitempty"`
+	BrowserTraceSampleRatio float64 `json:"browser_trace_sample_ratio"`
+}
+
 // BootstrapResponse is the JSON response for GET /api/bootstrap.
 type BootstrapResponse struct {
 	Authenticated  bool                  `json:"authenticated"`

@@ -3,6 +3,7 @@ package api
 // registerRoutes wires all API endpoints onto the server mux.
 func (s *Server) registerRoutes() {
 	// Read endpoints.
+	s.mux.HandleFunc("GET /api/runtime-config", s.handleRuntimeConfig)
 	s.mux.HandleFunc("GET /api/bootstrap", s.handleBootstrap)
 	s.mux.HandleFunc("GET /api/wanted", s.handleBrowse)
 	s.mux.HandleFunc("GET /api/wanted/{id}", s.handleDetail)
@@ -32,6 +33,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/branches/diff/{branch...}", s.handleBranchDiff)
 
 	// Public endpoints (read-only, no auth).
+	s.mux.HandleFunc("POST /api/telemetry/v1/traces", s.handleBrowserTraces)
+	s.mux.HandleFunc("OPTIONS /api/telemetry/v1/traces", s.handleBrowserTraces)
 	s.mux.HandleFunc("GET /api/scoreboard", s.handleScoreboard)
 	s.mux.HandleFunc("OPTIONS /api/scoreboard", s.handleScoreboard)
 	s.mux.HandleFunc("GET /api/scoreboard/detail", s.handleScoreboardDetail)

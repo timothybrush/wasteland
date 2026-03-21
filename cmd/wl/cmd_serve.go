@@ -82,6 +82,7 @@ type remoteWorkflowDB interface {
 
 type selfHostedAPIServer interface {
 	http.Handler
+	SetEnvironment(string)
 	SetScoreboard(*api.CachedEndpoint)
 	SetScoreboardDetail(*api.CachedEndpoint)
 	SetScoreboardDump(*api.CachedEndpoint)
@@ -298,6 +299,7 @@ func runServe(cmd *cobra.Command, stdout, stderr io.Writer) error {
 	})
 
 	server := newSelfHostedAPIServer(client)
+	server.SetEnvironment("self-sovereign")
 
 	scoreboardCache := api.NewScoreboardCache(db, 5*time.Minute)
 	server.SetScoreboard(scoreboardCache)
@@ -317,7 +319,9 @@ func runServe(cmd *cobra.Command, stdout, stderr io.Writer) error {
 	rateLimiter := api.NewRateLimiter(120, 120, time.Minute)
 	defer rateLimiter.Stop()
 	generalRL := api.RateLimit(rateLimiter)
-	bodyLimit := api.MaxBytesBody(64 << 10) // 64 KB
+	bodyLimit := api.MaxBytesBodyByPath(64<<10, map[string]int64{
+		observability.BrowserTraceIngressPath: 1 << 20,
+	})
 	sentryMiddleware := sentryhttp.New(sentryhttp.Options{Repanic: true})
 	handler := sentryMiddleware.Handle(observability.NewHTTPHandler(api.RequestLog(logger)(api.SecurityHeaders(generalRL(bodyLimit(api.SPAHandler(server, web.Assets)))))))
 	if devMode {
@@ -392,6 +396,7 @@ func runServeHosted(cmd *cobra.Command, stdout, _ io.Writer) error {
 
 	// Build the API server with hosted workspace resolution.
 	apiServer := api.NewHostedWorkspace(hosted.NewClientFunc(), hosted.NewWorkspaceFunc())
+	apiServer.SetEnvironment(environment)
 
 	// Public read-only RemoteDB against the canonical hosted upstream (no token needed).
 	publicDB := newHostedPublicDB()
@@ -438,7 +443,9 @@ func runServeHosted(cmd *cobra.Command, stdout, _ io.Writer) error {
 	hostedRateLimiter := api.NewRateLimiter(120, 120, time.Minute)
 	defer hostedRateLimiter.Stop()
 	generalRL := api.RateLimit(hostedRateLimiter)
-	bodyLimit := api.MaxBytesBody(64 << 10) // 64 KB
+	bodyLimit := api.MaxBytesBodyByPath(64<<10, map[string]int64{
+		observability.BrowserTraceIngressPath: 1 << 20,
+	})
 	sentryMiddleware := sentryhttp.New(sentryhttp.Options{Repanic: true})
 	handler := sentryMiddleware.Handle(observability.NewHTTPHandler(api.RequestLog(logger)(api.SecurityHeaders(generalRL(bodyLimit(hostedServer.Handler(apiServer, web.Assets)))))))
 	if devMode {

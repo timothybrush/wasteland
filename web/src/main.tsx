@@ -1,37 +1,58 @@
-import "./api/prefetch"; // Start browse fetch immediately, before React mounts.
 import { getDefaultIntegrations, globalHandlersIntegration } from "@sentry/browser";
 import * as Sentry from "@sentry/react";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { startPrefetch } from "./api/prefetch";
+import { loadRuntimeConfig } from "./api/runtimeConfig";
+import type { RuntimeConfigResponse } from "./api/types";
 import { Toaster } from "./components/Toaster";
+import { initBrowserTracing } from "./observability/browser";
 import "./styles/global.css";
 
-Sentry.init({
-  dsn: import.meta.env.VITE_SENTRY_DSN || "",
-  environment: import.meta.env.VITE_ENVIRONMENT || "development",
-  integrations: [
+function initSentry(runtimeConfig: RuntimeConfigResponse) {
+  const browserTracingEnabled = runtimeConfig.browser_tracing_enabled;
+  const integrations = [
     ...getDefaultIntegrations({}),
     globalHandlersIntegration({ onerror: true, onunhandledrejection: true }),
-    Sentry.browserTracingIntegration(),
     Sentry.replayIntegration(),
-  ],
-  tracesSampleRate: 0.2,
-  replaysSessionSampleRate: 0,
-  replaysOnErrorSampleRate: 1.0,
-  beforeSend(event) {
-    // Drop errors from third-party scripts/fetches (e.g. Product Fruits, analytics).
-    const msg = event.exception?.values?.[0]?.value ?? "";
-    if (/\((?:.*\.productfruits\.com|.*\.analytics\.)|chrome-extension:/.test(msg)) {
-      return null;
-    }
-    return event;
-  },
-});
+  ];
+  if (!browserTracingEnabled) {
+    integrations.push(Sentry.browserTracingIntegration());
+  }
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <App />
-    <Toaster />
-  </StrictMode>,
-);
+  Sentry.init({
+    dsn: import.meta.env.VITE_SENTRY_DSN || "",
+    environment: runtimeConfig.environment || import.meta.env.VITE_ENVIRONMENT || "development",
+    integrations,
+    tracesSampleRate: browserTracingEnabled ? 0 : 0.2,
+    replaysSessionSampleRate: 0,
+    replaysOnErrorSampleRate: 1.0,
+    beforeSend(event) {
+      // Drop errors from third-party scripts/fetches (e.g. Product Fruits, analytics).
+      const msg = event.exception?.values?.[0]?.value ?? "";
+      if (/\((?:.*\.productfruits\.com|.*\.analytics\.)|chrome-extension:/.test(msg)) {
+        return null;
+      }
+      return event;
+    },
+  });
+}
+
+async function start() {
+  const runtimeConfig = await loadRuntimeConfig();
+  if (runtimeConfig.browser_tracing_enabled) {
+    initBrowserTracing(runtimeConfig);
+  }
+  startPrefetch();
+  initSentry(runtimeConfig);
+
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <App />
+      <Toaster />
+    </StrictMode>,
+  );
+}
+
+void start();

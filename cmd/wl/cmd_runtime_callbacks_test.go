@@ -17,8 +17,10 @@ import (
 
 type fakeSelfHostedServer struct {
 	client *sdk.Client
+	env    string
 }
 
+func (s *fakeSelfHostedServer) SetEnvironment(environment string)       { s.env = environment }
 func (s *fakeSelfHostedServer) SetScoreboard(*api.CachedEndpoint)       {}
 func (s *fakeSelfHostedServer) SetScoreboardDetail(*api.CachedEndpoint) {}
 func (s *fakeSelfHostedServer) SetScoreboardDump(*api.CachedEndpoint)   {}
@@ -424,10 +426,10 @@ func TestRunServe_RemoteClientCallbacks(t *testing.T) {
 }
 
 func TestRunServe_UsesInjectedSelfHostedServer(t *testing.T) {
-	var capturedClient *sdk.Client
+	var capturedServer *fakeSelfHostedServer
 	withSelfHostedAPIServerOverride(t, func(client *sdk.Client) selfHostedAPIServer {
-		capturedClient = client
-		return &fakeSelfHostedServer{client: client}
+		capturedServer = &fakeSelfHostedServer{client: client}
+		return capturedServer
 	})
 	withServeListenOverride(t, func(*http.Server) error { return nil })
 	withLocalWorkflowDBOverride(t, func(string, string) localWorkflowDB {
@@ -458,7 +460,10 @@ func TestRunServe_UsesInjectedSelfHostedServer(t *testing.T) {
 	if err := runServe(cmd, io.Discard, io.Discard); err != nil {
 		t.Fatalf("runServe() error = %v", err)
 	}
-	if capturedClient == nil {
+	if capturedServer == nil || capturedServer.client == nil {
 		t.Fatal("self-hosted API server did not receive client")
+	}
+	if capturedServer.env != "self-sovereign" {
+		t.Fatalf("environment = %q, want %q", capturedServer.env, "self-sovereign")
 	}
 }

@@ -58,6 +58,12 @@ func (s *Server) Handler(apiServer *api.Server, assets fs.FS) http.Handler {
 	mux.Handle("POST /api/auth/join", authRL(http.HandlerFunc(s.handleJoin)))
 	mux.Handle("DELETE /api/auth/wastelands/{upstream...}", authRL(http.HandlerFunc(s.handleLeaveWasteland)))
 
+	// Public browser bootstrap/telemetry endpoints bypass auth. The outer hosted
+	// handler stack still rate limits every request before it reaches this mux.
+	mux.HandleFunc("GET /api/runtime-config", apiServer.ServeHTTP)
+	mux.HandleFunc("POST /api/telemetry/v1/traces", apiServer.ServeHTTP)
+	mux.HandleFunc("OPTIONS /api/telemetry/v1/traces", apiServer.ServeHTTP)
+
 	// Public scoreboard endpoint (no auth, bypasses middleware).
 	mux.HandleFunc("GET /api/scoreboard", apiServer.ScoreboardHandler())
 	mux.HandleFunc("OPTIONS /api/scoreboard", apiServer.ScoreboardHandler())

@@ -135,6 +135,9 @@ func Init(ctx context.Context, cfg Config) (func(context.Context) error, bool, e
 // NewHTTPHandler wraps an HTTP handler with OTEL server instrumentation.
 func NewHTTPHandler(next http.Handler) http.Handler {
 	return otelhttp.NewHandler(next, "http.server",
+		otelhttp.WithFilter(func(r *http.Request) bool {
+			return r.URL.Path != BrowserTraceIngressPath
+		}),
 		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
 			return r.Method + " " + r.URL.Path
 		}),

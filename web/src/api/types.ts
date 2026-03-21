@@ -117,6 +117,13 @@ export interface ConfigResponse {
   upstreams?: UpstreamInfo[];
 }
 
+export interface RuntimeConfigResponse {
+  environment?: string;
+  browser_tracing_enabled: boolean;
+  browser_trace_endpoint?: string;
+  browser_trace_sample_ratio?: number;
+}
+
 export interface BootstrapResponse {
   authenticated: boolean;
   connected: boolean;

@@ -1,22 +1,27 @@
 import { browse, getActiveUpstream } from "./client";
 import type { BrowseResponse } from "./types";
 
-// Start fetching the default browse data immediately when the module loads,
-// before React mounts. Only prefetch when the browser already has an explicit
-// active upstream so browse and bootstrap share the same source of truth.
+// Only prefetch when the browser already has an explicit active upstream so
+// browse and bootstrap share the same source of truth.
 let prefetchPromise: Promise<BrowseResponse> | null = null;
 let prefetchedUpstream: string | null = null;
 
-// Only prefetch for the root path with no query params (default browse).
-// Skip in test environments where fetch is mocked after module load.
-const isTest = import.meta.env.MODE === "test";
-if (
-  !isTest &&
-  typeof window !== "undefined" &&
-  window.location.pathname === "/" &&
-  !window.location.search &&
-  getActiveUpstream()
-) {
+function shouldPrefetch(): boolean {
+  return (
+    import.meta.env.MODE !== "test" &&
+    typeof window !== "undefined" &&
+    window.location.pathname === "/" &&
+    !window.location.search &&
+    !!getActiveUpstream()
+  );
+}
+
+// Start fetching the default browse data after runtime telemetry init so the
+// first hosted browse request carries trace headers.
+export function startPrefetch() {
+  if (prefetchPromise || prefetchedUpstream || !shouldPrefetch()) {
+    return;
+  }
   prefetchedUpstream = getActiveUpstream();
   prefetchPromise = browse().catch(() => null as unknown as BrowseResponse);
 }

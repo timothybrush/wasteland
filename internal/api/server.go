@@ -30,6 +30,7 @@ type Server struct {
 	publicClient     *sdk.Client // anonymous fallback for public reads (hosted mode)
 	browseCache      *ReadCache  // keyed by canonicalized query string
 	detailCache      *ReadCache  // keyed by item ID
+	environment      string
 	mux              *http.ServeMux
 	hosted           bool // true when running in multi-tenant hosted mode
 }
@@ -107,6 +108,11 @@ func (s *Server) SetScoreboardDump(ce *CachedEndpoint) {
 // SetPublicClient sets an anonymous SDK client for unauthenticated public reads.
 func (s *Server) SetPublicClient(c *sdk.Client) {
 	s.publicClient = c
+}
+
+// SetEnvironment sets the environment string surfaced to browser runtime config.
+func (s *Server) SetEnvironment(environment string) {
+	s.environment = environment
 }
 
 // ScoreboardHandler returns an http.HandlerFunc for the scoreboard endpoint.

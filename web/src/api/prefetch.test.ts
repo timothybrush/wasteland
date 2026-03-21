@@ -27,6 +27,7 @@ describe("prefetch", () => {
     ) as typeof fetch;
 
     const prefetch = await import("./prefetch");
+    prefetch.startPrefetch();
     const cached = prefetch.consumePrefetch("hop/wl-commons");
 
     expect(cached).not.toBeNull();
@@ -43,6 +44,7 @@ describe("prefetch", () => {
     globalThis.fetch = vi.fn() as typeof fetch;
 
     const prefetch = await import("./prefetch");
+    prefetch.startPrefetch();
 
     expect(prefetch.consumePrefetch("hop/wl-commons")).toBeNull();
     expect(globalThis.fetch).not.toHaveBeenCalled();
@@ -53,6 +55,7 @@ describe("prefetch", () => {
     globalThis.fetch = vi.fn() as typeof fetch;
 
     const prefetch = await import("./prefetch");
+    prefetch.startPrefetch();
 
     expect(prefetch.consumePrefetch(null)).toBeNull();
     expect(globalThis.fetch).not.toHaveBeenCalled();
@@ -66,6 +69,7 @@ describe("prefetch", () => {
     ) as typeof fetch;
 
     const prefetch = await import("./prefetch");
+    prefetch.startPrefetch();
     const cached = prefetch.consumePrefetch("hop/wl-commons");
 
     expect(cached).not.toBeNull();
@@ -85,6 +89,7 @@ describe("prefetch", () => {
     ) as typeof fetch;
 
     const prefetch = await import("./prefetch");
+    prefetch.startPrefetch();
 
     expect(prefetch.consumePrefetch("gastownhall/gascity")).toBeNull();
   });
