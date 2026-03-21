@@ -132,9 +132,6 @@ func (c *Client) BrowseContext(ctx context.Context, filter commons.BrowseFilter)
 		if len(pending) == 0 {
 			continue
 		}
-		if view == "mine" && pendingIDs[items[i].ID] == 0 && len(visiblePendingItems[items[i].ID]) == 0 {
-			continue
-		}
 		pendingIDs[items[i].ID] += len(pending)
 		overlayPendingClaimedBy(&items[i], pending)
 	}

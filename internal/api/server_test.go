@@ -571,6 +571,45 @@ func TestDetailNotFound(t *testing.T) {
 	}
 }
 
+func TestBrowse_DefaultView_IncludesPendingBadgeDataForVisibleItems(t *testing.T) {
+	db := newFakeDB()
+	db.items["w-1"] = &fakeItem{id: "w-1", title: "My item", status: "open", priority: 1, postedBy: "alice", effortLevel: "medium"}
+
+	client := sdk.New(sdk.ClientConfig{
+		DB:        db,
+		RigHandle: "alice",
+		Mode:      "pr",
+		ListPendingItems: func() (map[string][]sdk.PendingItem, error) {
+			return map[string][]sdk.PendingItem{
+				"w-1": {{
+					RigHandle: "bob",
+					Status:    "in_review",
+					Branch:    "wl/bob/w-1",
+					PRURL:     "https://example.com/pr/1",
+				}},
+			}, nil
+		},
+	})
+
+	ts := httptest.NewServer(New(client))
+	defer ts.Close()
+
+	var browse BrowseResponse
+	r := getJSON(t, ts, "/api/wanted", &browse)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 browse, got %d", r.StatusCode)
+	}
+	if len(browse.Items) != 1 || browse.Items[0].ID != "w-1" {
+		t.Fatalf("browse = %+v, want visible main item", browse.Items)
+	}
+	if browse.Items[0].PendingCount != 1 {
+		t.Fatalf("pending_count = %d, want 1", browse.Items[0].PendingCount)
+	}
+	if len(browse.Items[0].PendingItems) != 1 || browse.Items[0].PendingItems[0].RigHandle != "bob" {
+		t.Fatalf("pending_items = %+v, want bob pending PR", browse.Items[0].PendingItems)
+	}
+}
+
 func TestDashboard(t *testing.T) {
 	db := newFakeDB()
 	db.items["w-1"] = &fakeItem{id: "w-1", title: "My task", status: "claimed", claimedBy: "alice", postedBy: "bob", effortLevel: "medium"}

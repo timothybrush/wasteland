@@ -1198,6 +1198,51 @@ func TestBrowse_DefaultViewTreatsEmptyAsMine(t *testing.T) {
 	}
 }
 
+func TestBrowse_DefaultViewShowsPendingForVisibleItems(t *testing.T) {
+	db := newFakeDB()
+	db.seedItem(fakeItem{
+		ID:          "w-1",
+		Title:       "My visible item",
+		Project:     "gascity",
+		Type:        "bug",
+		Priority:    1,
+		PostedBy:    "alice",
+		Status:      "open",
+		EffortLevel: "small",
+	})
+
+	c := New(ClientConfig{
+		DB:        db,
+		RigHandle: "alice",
+		Mode:      "pr",
+		ListPendingItems: func() (map[string][]PendingItem, error) {
+			return map[string][]PendingItem{
+				"w-1": {{
+					RigHandle: "bob",
+					Status:    "in_review",
+					Branch:    "wl/bob/w-1",
+					PRURL:     "https://example.com/pr/1",
+				}},
+			}, nil
+		},
+	})
+
+	result, err := c.Browse(commons.BrowseFilter{Priority: -1})
+	if err != nil {
+		t.Fatalf("Browse: %v", err)
+	}
+
+	if len(result.Items) != 1 || result.Items[0].ID != "w-1" {
+		t.Fatalf("browse items = %+v, want visible main item", result.Items)
+	}
+	if result.PendingIDs["w-1"] != 1 {
+		t.Fatalf("pending count = %d, want 1", result.PendingIDs["w-1"])
+	}
+	if len(result.UpstreamPending["w-1"]) != 1 || result.UpstreamPending["w-1"][0].RigHandle != "bob" {
+		t.Fatalf("upstream pending = %+v, want bob pending PR", result.UpstreamPending["w-1"])
+	}
+}
+
 func TestDetail_UpstreamPRs(t *testing.T) {
 	db := newFakeDB()
 	db.seedItem(fakeItem{ID: "w-1", Title: "Fix bug", Status: "open", Priority: 1, PostedBy: "alice", EffortLevel: "medium"})
