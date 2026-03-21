@@ -21,6 +21,7 @@ import (
 	"github.com/gastownhall/wasteland/internal/commons"
 	"github.com/gastownhall/wasteland/internal/federation"
 	"github.com/gastownhall/wasteland/internal/hosted"
+	"github.com/gastownhall/wasteland/internal/observability"
 	"github.com/gastownhall/wasteland/internal/remote"
 	"github.com/gastownhall/wasteland/internal/sdk"
 	"github.com/gastownhall/wasteland/internal/style"
@@ -138,7 +139,7 @@ func initSentry(environment string) {
 		Dsn:              dsn,
 		Environment:      environment,
 		Release:          version,
-		TracesSampleRate: 0.2,
+		TracesSampleRate: observability.SentryTraceSampleRate(),
 	}); err != nil {
 		slog.Error("sentry init failed", "error", err)
 	}
@@ -147,6 +148,24 @@ func initSentry(environment string) {
 func runServe(cmd *cobra.Command, stdout, stderr io.Writer) error {
 	logger := slog.New(slog.NewJSONHandler(stdout, nil))
 	slog.SetDefault(logger)
+
+	shutdownTelemetry, telemetryEnabled, err := observability.Init(context.Background(), observability.Config{
+		ServiceName:      "wasteland-self-sovereign",
+		ServiceNamespace: "wasteland",
+		ServiceVersion:   version,
+		Environment:      "self-sovereign",
+	})
+	if err != nil {
+		slog.Warn("otel init failed", "error", err)
+	} else if telemetryEnabled {
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if shutdownErr := shutdownTelemetry(shutdownCtx); shutdownErr != nil {
+				slog.Warn("otel shutdown failed", "error", shutdownErr)
+			}
+		}()
+	}
 
 	initSentry("self-sovereign")
 	defer sentry.Flush(2 * time.Second)
@@ -279,7 +298,7 @@ func runServe(cmd *cobra.Command, stdout, stderr io.Writer) error {
 	generalRL := api.RateLimit(rateLimiter)
 	bodyLimit := api.MaxBytesBody(64 << 10) // 64 KB
 	sentryMiddleware := sentryhttp.New(sentryhttp.Options{Repanic: true})
-	handler := sentryMiddleware.Handle(api.RequestLog(logger)(api.SecurityHeaders(generalRL(bodyLimit(api.SPAHandler(server, web.Assets))))))
+	handler := sentryMiddleware.Handle(observability.NewHTTPHandler(api.RequestLog(logger)(api.SecurityHeaders(generalRL(bodyLimit(api.SPAHandler(server, web.Assets)))))))
 	if devMode {
 		handler = api.CORSMiddleware(handler)
 	}
@@ -301,6 +320,25 @@ func runServeHosted(cmd *cobra.Command, stdout, _ io.Writer) error {
 	if environment == "" {
 		environment = "production"
 	}
+
+	shutdownTelemetry, telemetryEnabled, err := observability.Init(context.Background(), observability.Config{
+		ServiceName:      "wasteland-hosted",
+		ServiceNamespace: "wasteland",
+		ServiceVersion:   version,
+		Environment:      environment,
+	})
+	if err != nil {
+		slog.Warn("otel init failed", "error", err)
+	} else if telemetryEnabled {
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if shutdownErr := shutdownTelemetry(shutdownCtx); shutdownErr != nil {
+				slog.Warn("otel shutdown failed", "error", shutdownErr)
+			}
+		}()
+	}
+
 	initSentry(environment)
 	defer sentry.Flush(2 * time.Second)
 
@@ -372,7 +410,7 @@ func runServeHosted(cmd *cobra.Command, stdout, _ io.Writer) error {
 	generalRL := api.RateLimit(hostedRateLimiter)
 	bodyLimit := api.MaxBytesBody(64 << 10) // 64 KB
 	sentryMiddleware := sentryhttp.New(sentryhttp.Options{Repanic: true})
-	handler := sentryMiddleware.Handle(api.RequestLog(logger)(api.SecurityHeaders(generalRL(bodyLimit(hostedServer.Handler(apiServer, web.Assets))))))
+	handler := sentryMiddleware.Handle(observability.NewHTTPHandler(api.RequestLog(logger)(api.SecurityHeaders(generalRL(bodyLimit(hostedServer.Handler(apiServer, web.Assets)))))))
 	if devMode {
 		handler = api.CORSMiddleware(handler)
 	}

@@ -83,7 +83,7 @@ func (s *Server) AuthMiddleware(next http.Handler) http.Handler {
 				return
 			}
 			// Validate the connection is still active in Nango.
-			if _, _, err := s.nango.GetConnection(connectionID); err != nil {
+			if _, _, err := s.nango.GetConnectionContext(r.Context(), connectionID); err != nil {
 				slog.Warn("auth: session expired (nango validation failed)", "error", err, "path", r.URL.Path)
 				passOrBlock(w, r, http.StatusUnauthorized, "session expired")
 				return
@@ -102,7 +102,7 @@ func (s *Server) AuthMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Resolve the per-user Workspace.
-		workspace, err := s.resolver.Resolve(session)
+		workspace, err := s.resolver.ResolveContext(r.Context(), session)
 		if err != nil {
 			slog.Warn("auth: failed to resolve workspace", "error", err, "path", r.URL.Path)
 			passOrBlock(w, r, http.StatusUnauthorized, "failed to resolve workspace: "+err.Error())

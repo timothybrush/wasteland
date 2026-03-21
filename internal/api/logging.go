@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/gastownhall/wasteland/internal/observability"
 )
 
 // statusRecorder wraps http.ResponseWriter to capture the response status code.
@@ -43,13 +45,20 @@ func RequestLog(logger *slog.Logger) func(http.Handler) http.Handler {
 			if rec.status >= 500 {
 				level = slog.LevelError
 			}
-			logger.LogAttrs(r.Context(), level, "http request",
+			attrs := []slog.Attr{
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),
 				slog.Int("status", rec.status),
 				slog.Duration("duration", time.Since(start)),
 				slog.String("client_ip", clientIP(r)),
-			)
+			}
+			if traceID, spanID := observability.TraceIDs(r.Context()); traceID != "" {
+				attrs = append(attrs,
+					slog.String("trace_id", traceID),
+					slog.String("span_id", spanID),
+				)
+			}
+			logger.LogAttrs(r.Context(), level, "http request", attrs...)
 		})
 	}
 }

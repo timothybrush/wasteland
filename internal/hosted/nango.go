@@ -2,6 +2,7 @@ package hosted
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +12,12 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/gastownhall/wasteland/internal/observability"
+	"go.opentelemetry.io/otel"
 )
+
+var nangoTracer = otel.Tracer("github.com/gastownhall/wasteland/internal/hosted/nango")
 
 // NangoConfig holds configuration for the Nango integration.
 type NangoConfig struct {
@@ -134,7 +140,10 @@ func NewNangoClient(cfg NangoConfig) *NangoClient {
 		baseURL:       base,
 		secretKey:     cfg.SecretKey,
 		integrationID: integrationID,
-		client:        &http.Client{Timeout: 30 * time.Second},
+		client: &http.Client{
+			Timeout:   30 * time.Second,
+			Transport: observability.NewTransport(nil),
+		},
 	}
 }
 
@@ -158,17 +167,27 @@ type nangoConnectionResponse struct {
 
 // GetConnection fetches the stored token and metadata for a Nango connection.
 func (n *NangoClient) GetConnection(connectionID string) (string, *UserMetadata, error) {
+	return n.GetConnectionContext(context.Background(), connectionID)
+}
+
+// GetConnectionContext fetches the stored token and metadata for a Nango connection.
+func (n *NangoClient) GetConnectionContext(ctx context.Context, connectionID string) (string, *UserMetadata, error) {
+	ctx, span := nangoTracer.Start(ctx, "nango.get_connection")
+	defer span.End()
+
 	u := fmt.Sprintf("%s/connection/%s?provider_config_key=%s",
 		n.baseURL, url.PathEscape(connectionID), url.QueryEscape(n.integrationID))
 
-	req, err := http.NewRequest("GET", u, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
+		span.RecordError(err)
 		return "", nil, fmt.Errorf("creating request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+n.secretKey)
 
 	resp, err := n.client.Do(req)
 	if err != nil {
+		span.RecordError(err)
 		return "", nil, fmt.Errorf("nango request failed: %w", err)
 	}
 	defer resp.Body.Close() //nolint:errcheck // best-effort close
@@ -178,11 +197,13 @@ func (n *NangoClient) GetConnection(connectionID string) (string, *UserMetadata,
 		if readErr != nil {
 			body = []byte("(could not read body)")
 		}
+		span.RecordError(fmt.Errorf("nango returned %d", resp.StatusCode))
 		return "", nil, fmt.Errorf("nango returned %d: %s", resp.StatusCode, string(body))
 	}
 
 	var connResp nangoConnectionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&connResp); err != nil {
+		span.RecordError(err)
 		return "", nil, fmt.Errorf("decoding nango response: %w", err)
 	}
 
@@ -212,12 +233,17 @@ type connectSessionAPIResponse struct {
 // CreateConnectSession creates a short-lived connect session token for the frontend SDK.
 // Retries once on transient errors (timeouts, 5xx).
 func (n *NangoClient) CreateConnectSession(endUserID string) (string, error) {
+	return n.CreateConnectSessionContext(context.Background(), endUserID)
+}
+
+// CreateConnectSessionContext creates a short-lived connect session token with request context.
+func (n *NangoClient) CreateConnectSessionContext(ctx context.Context, endUserID string) (string, error) {
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		if attempt > 0 {
 			time.Sleep(2 * time.Second)
 		}
-		token, err := n.doCreateConnectSession(endUserID)
+		token, err := n.doCreateConnectSessionContext(ctx, endUserID)
 		if err == nil {
 			return token, nil
 		}
@@ -231,7 +257,10 @@ func (n *NangoClient) CreateConnectSession(endUserID string) (string, error) {
 	return "", fmt.Errorf("nango is not responding — please try again in a moment: %w", lastErr)
 }
 
-func (n *NangoClient) doCreateConnectSession(endUserID string) (string, error) {
+func (n *NangoClient) doCreateConnectSessionContext(ctx context.Context, endUserID string) (string, error) {
+	ctx, span := nangoTracer.Start(ctx, "nango.create_connect_session")
+	defer span.End()
+
 	u := fmt.Sprintf("%s/connect/sessions", n.baseURL)
 
 	body, err := json.Marshal(connectSessionAPIRequest{
@@ -242,8 +271,9 @@ func (n *NangoClient) doCreateConnectSession(endUserID string) (string, error) {
 		return "", fmt.Errorf("marshaling request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", u, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", u, bytes.NewReader(body))
 	if err != nil {
+		span.RecordError(err)
 		return "", fmt.Errorf("creating request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+n.secretKey)
@@ -251,12 +281,14 @@ func (n *NangoClient) doCreateConnectSession(endUserID string) (string, error) {
 
 	resp, err := n.client.Do(req)
 	if err != nil {
+		span.RecordError(err)
 		return "", fmt.Errorf("nango request failed: %w", err)
 	}
 	defer resp.Body.Close() //nolint:errcheck // best-effort close
 
 	if resp.StatusCode >= 500 {
 		respBody, _ := io.ReadAll(resp.Body)
+		span.RecordError(fmt.Errorf("nango returned %d", resp.StatusCode))
 		return "", &retryableError{msg: fmt.Sprintf("nango returned %d: %s", resp.StatusCode, string(respBody))}
 	}
 
@@ -265,11 +297,13 @@ func (n *NangoClient) doCreateConnectSession(endUserID string) (string, error) {
 		if readErr != nil {
 			respBody = []byte("(could not read body)")
 		}
+		span.RecordError(fmt.Errorf("nango returned %d", resp.StatusCode))
 		return "", fmt.Errorf("nango returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var sessionResp connectSessionAPIResponse
 	if err := json.NewDecoder(resp.Body).Decode(&sessionResp); err != nil {
+		span.RecordError(err)
 		return "", fmt.Errorf("decoding nango response: %w", err)
 	}
 
@@ -297,16 +331,26 @@ func isRetryable(err error) bool {
 
 // SetMetadata writes/updates the persistent user metadata on the Nango connection.
 func (n *NangoClient) SetMetadata(connectionID string, meta *UserMetadata) error {
+	return n.SetMetadataContext(context.Background(), connectionID, meta)
+}
+
+// SetMetadataContext writes/updates the persistent user metadata with request context.
+func (n *NangoClient) SetMetadataContext(ctx context.Context, connectionID string, meta *UserMetadata) error {
+	ctx, span := nangoTracer.Start(ctx, "nango.set_metadata")
+	defer span.End()
+
 	u := fmt.Sprintf("%s/connection/%s/metadata",
 		n.baseURL, url.PathEscape(connectionID))
 
 	body, err := json.Marshal(meta)
 	if err != nil {
+		span.RecordError(err)
 		return fmt.Errorf("marshaling metadata: %w", err)
 	}
 
-	req, err := http.NewRequest("PATCH", u, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "PATCH", u, bytes.NewReader(body))
 	if err != nil {
+		span.RecordError(err)
 		return fmt.Errorf("creating request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+n.secretKey)
@@ -315,6 +359,7 @@ func (n *NangoClient) SetMetadata(connectionID string, meta *UserMetadata) error
 
 	resp, err := n.client.Do(req)
 	if err != nil {
+		span.RecordError(err)
 		return fmt.Errorf("nango request failed: %w", err)
 	}
 	defer resp.Body.Close() //nolint:errcheck // best-effort close
@@ -324,6 +369,7 @@ func (n *NangoClient) SetMetadata(connectionID string, meta *UserMetadata) error
 		if readErr != nil {
 			respBody = []byte("(could not read body)")
 		}
+		span.RecordError(fmt.Errorf("nango returned %d", resp.StatusCode))
 		return fmt.Errorf("nango returned %d: %s", resp.StatusCode, string(respBody))
 	}
 	return nil

@@ -2,11 +2,14 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 func TestStatusRecorder_CapturesExplicitStatus(t *testing.T) {
@@ -122,5 +125,39 @@ func TestRequestLog_ImplicitOKStatus(t *testing.T) {
 
 	if status, ok := entry["status"].(float64); !ok || int(status) != 200 {
 		t.Errorf("status = %v, want 200", entry["status"])
+	}
+}
+
+func TestRequestLog_IncludesTraceIDs(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+
+	handler := RequestLog(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		traceID := trace.TraceID{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}
+		spanID := trace.SpanID{2, 2, 2, 2, 2, 2, 2, 2}
+		ctx := trace.ContextWithSpanContext(r.Context(), trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID:    traceID,
+			SpanID:     spanID,
+			TraceFlags: trace.FlagsSampled,
+		}))
+		*r = *r.WithContext(ctx)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/wanted", nil).WithContext(context.Background())
+	req.RemoteAddr = "10.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatalf("invalid JSON: %v\nbody: %s", err, buf.String())
+	}
+
+	if entry["trace_id"] == "" {
+		t.Fatalf("trace_id missing from log entry: %v", entry)
+	}
+	if entry["span_id"] == "" {
+		t.Fatalf("span_id missing from log entry: %v", entry)
 	}
 }

@@ -1,9 +1,13 @@
 package sdk
 
 import (
+	"context"
 	"strings"
 
 	"github.com/gastownhall/wasteland/internal/commons"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // PendingItem represents state from a pending upstream PR's fork branch.
@@ -23,6 +27,8 @@ type PendingItem struct {
 var stateRank = map[string]int{
 	"open": 0, "claimed": 1, "in_review": 2, "completed": 3,
 }
+
+var sdkTracer = otel.Tracer("github.com/gastownhall/wasteland/internal/sdk")
 
 // BrowseResult holds the items returned by Browse along with branch metadata.
 type BrowseResult struct {
@@ -50,14 +56,11 @@ type DetailResult struct {
 
 // Browse queries the wanted board with filters, applying branch overlays in PR mode.
 func (c *Client) Browse(filter commons.BrowseFilter) (*BrowseResult, error) {
-	items, pendingIDs, err := commons.BrowseWantedBranchAware(c.db, c.mode, c.rigHandle, filter)
-	if err != nil {
-		return nil, err
-	}
+	return c.BrowseContext(context.Background(), filter)
+}
 
-	// In non-upstream views, merge pending PR state if the callback is set.
-	var upstreamItems map[string][]PendingItem
-	var visiblePendingItems map[string][]PendingItem
+// BrowseContext queries the wanted board with request-scoped tracing.
+func (c *Client) BrowseContext(ctx context.Context, filter commons.BrowseFilter) (*BrowseResult, error) {
 	view := filter.View
 	if view == "" {
 		if c.mode == "pr" {
@@ -66,8 +69,35 @@ func (c *Client) Browse(filter commons.BrowseFilter) (*BrowseResult, error) {
 			view = "all"
 		}
 	}
+
+	ctx, span := sdkTracer.Start(ctx, "sdk.browse", trace.WithAttributes(
+		attribute.String("mode", c.mode),
+		attribute.String("view", view),
+	))
+	defer span.End()
+
+	_, querySpan := sdkTracer.Start(ctx, "sdk.browse.branch_aware_query")
+	items, pendingIDs, err := commons.BrowseWantedBranchAware(c.db, c.mode, c.rigHandle, filter)
+	if err != nil {
+		querySpan.RecordError(err)
+		querySpan.End()
+		span.RecordError(err)
+		return nil, err
+	}
+	querySpan.End()
+
+	// In non-upstream views, merge pending PR state if the callback is set.
+	var upstreamItems map[string][]PendingItem
+	var visiblePendingItems map[string][]PendingItem
 	if view != "upstream" && c.ListPendingItems != nil {
+		_, pendingSpan := sdkTracer.Start(ctx, "sdk.browse.list_pending_items")
 		upstreamItems, err = c.ListPendingItems()
+		if err != nil {
+			pendingSpan.RecordError(err)
+		} else {
+			pendingSpan.SetAttributes(attribute.Int("wanted_ids", len(upstreamItems)))
+		}
+		pendingSpan.End()
 		if err == nil {
 			visiblePendingItems = upstreamItems
 			if view == "mine" {
@@ -91,6 +121,7 @@ func (c *Client) Browse(filter commons.BrowseFilter) (*BrowseResult, error) {
 		overlayPendingClaimedBy(&items[i], pending)
 	}
 
+	overlayCtx, overlaySpan := sdkTracer.Start(ctx, "sdk.browse.overlay_pending_branch_only")
 	for id, pending := range visiblePendingItems {
 		if seen[id] || len(pending) == 0 {
 			continue
@@ -100,7 +131,7 @@ func (c *Client) Browse(filter commons.BrowseFilter) (*BrowseResult, error) {
 		if best.Branch == "" {
 			continue
 		}
-		item, _, _, err := c.loadPendingDetail(id, best)
+		item, _, _, err := c.loadPendingDetailContext(overlayCtx, id, best)
 		if err != nil {
 			continue
 		}
@@ -122,6 +153,8 @@ func (c *Client) Browse(filter commons.BrowseFilter) (*BrowseResult, error) {
 		overlayPendingClaimedBy(&summary, pending)
 		items = append(items, summary)
 	}
+	overlaySpan.SetAttributes(attribute.Int("branch_only_items", len(items)-len(seen)))
+	overlaySpan.End()
 
 	return &BrowseResult{Items: items, PendingIDs: pendingIDs, UpstreamPending: upstreamItems}, nil
 }
@@ -199,29 +232,43 @@ func matchesPendingBrowseFilter(item *commons.WantedItem, status, claimedBy stri
 
 // Detail fetches the complete state of a wanted item including actions.
 func (c *Client) Detail(wantedID string) (*DetailResult, error) {
-	if c.mode == "pr" {
-		return c.detailPR(wantedID)
-	}
-	return c.detailWildWest(wantedID)
+	return c.DetailContext(context.Background(), wantedID)
 }
 
-func (c *Client) detailPR(wantedID string) (*DetailResult, error) {
+// DetailContext fetches the complete state of a wanted item with request tracing.
+func (c *Client) DetailContext(ctx context.Context, wantedID string) (*DetailResult, error) {
+	ctx, span := sdkTracer.Start(ctx, "sdk.detail", trace.WithAttributes(
+		attribute.String("mode", c.mode),
+	))
+	defer span.End()
+	if c.mode == "pr" {
+		return c.detailPRContext(ctx, wantedID)
+	}
+	return c.detailWildWestContext(ctx, wantedID)
+}
+
+func (c *Client) detailPRContext(ctx context.Context, wantedID string) (*DetailResult, error) {
+	_, resolveSpan := sdkTracer.Start(ctx, "sdk.detail.resolve_item_state")
 	state, err := commons.ResolveItemState(c.db, c.rigHandle, wantedID)
+	if err != nil {
+		resolveSpan.RecordError(err)
+	}
+	resolveSpan.End()
 	if err != nil {
 		return nil, err
 	}
 	effective := state.Effective()
 	if effective == nil {
-		upstreamPRs := c.fetchUpstreamPRs(wantedID)
+		upstreamPRs := c.fetchUpstreamPRsContext(ctx, wantedID)
 		if len(upstreamPRs) > 0 {
-			result, err := c.detailFromPending(wantedID, upstreamPRs)
+			result, err := c.detailFromPendingContext(ctx, wantedID, upstreamPRs)
 			if err == nil {
 				return result, nil
 			}
 			return nil, err
 		}
 		// Fall back to main query if resolve found nothing.
-		return c.detailWildWest(wantedID)
+		return c.detailWildWestContext(ctx, wantedID)
 	}
 
 	result := &DetailResult{
@@ -242,28 +289,34 @@ func (c *Client) detailPR(wantedID string) (*DetailResult, error) {
 		result.BranchURL = c.BranchURL(state.BranchName)
 	}
 	result.BranchActions = c.computeBranchActions(result)
-	result.UpstreamPRs = c.fetchUpstreamPRs(wantedID)
+	result.UpstreamPRs = c.fetchUpstreamPRsContext(ctx, wantedID)
 	return result, nil
 }
 
-func (c *Client) loadPendingDetail(wantedID string, pending PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error) {
+func (c *Client) loadPendingDetailContext(ctx context.Context, wantedID string, pending PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error) {
+	_, span := sdkTracer.Start(ctx, "sdk.pending.load_detail")
+	defer span.End()
 	if c.LoadPendingDetail != nil {
 		item, completion, stamp, err := c.LoadPendingDetail(wantedID, pending)
 		if err == nil {
 			return item, completion, stamp, nil
 		}
+		span.RecordError(err)
 	}
 	return commons.QueryFullDetailAsOf(c.db, wantedID, pending.Branch)
 }
 
-func (c *Client) detailFromPending(wantedID string, pending []PendingItem) (*DetailResult, error) {
+func (c *Client) detailFromPendingContext(ctx context.Context, wantedID string, pending []PendingItem) (*DetailResult, error) {
+	ctx, span := sdkTracer.Start(ctx, "sdk.detail.pending_fallback")
+	defer span.End()
 	best := bestPendingState(pending)
 	if best.Branch == "" {
-		return c.detailWildWest(wantedID)
+		return c.detailWildWestContext(ctx, wantedID)
 	}
 
-	item, completion, stamp, err := c.loadPendingDetail(wantedID, best)
+	item, completion, stamp, err := c.loadPendingDetailContext(ctx, wantedID, best)
 	if err != nil {
+		span.RecordError(err)
 		return nil, err
 	}
 
@@ -280,8 +333,15 @@ func (c *Client) detailFromPending(wantedID string, pending []PendingItem) (*Det
 }
 
 func (c *Client) detailWildWest(wantedID string) (*DetailResult, error) {
+	return c.detailWildWestContext(context.Background(), wantedID)
+}
+
+func (c *Client) detailWildWestContext(ctx context.Context, wantedID string) (*DetailResult, error) {
+	ctx, span := sdkTracer.Start(ctx, "sdk.detail.query_full_detail")
+	defer span.End()
 	item, completion, stamp, err := commons.QueryFullDetail(c.db, wantedID)
 	if err != nil {
+		span.RecordError(err)
 		return nil, err
 	}
 	result := &DetailResult{
@@ -290,17 +350,19 @@ func (c *Client) detailWildWest(wantedID string) (*DetailResult, error) {
 		Stamp:      stamp,
 		Actions:    commons.AvailableTransitions(item, c.rigHandle),
 	}
-	result.UpstreamPRs = c.fetchUpstreamPRs(wantedID)
+	result.UpstreamPRs = c.fetchUpstreamPRsContext(ctx, wantedID)
 	return result, nil
 }
 
-// fetchUpstreamPRs returns pending upstream PRs for a specific item.
-func (c *Client) fetchUpstreamPRs(wantedID string) []PendingItem {
+func (c *Client) fetchUpstreamPRsContext(ctx context.Context, wantedID string) []PendingItem {
 	if c.ListPendingItems == nil {
 		return nil
 	}
+	_, span := sdkTracer.Start(ctx, "sdk.detail.list_pending_items")
+	defer span.End()
 	upstream, err := c.ListPendingItems()
 	if err != nil {
+		span.RecordError(err)
 		return nil
 	}
 	return upstream[wantedID]
@@ -350,10 +412,34 @@ func (c *Client) computeBranchActions(r *DetailResult) []string {
 
 // Dashboard fetches the personal dashboard for the current rig handle.
 func (c *Client) Dashboard() (*commons.DashboardData, error) {
-	return commons.QueryMyDashboardBranchAware(c.db, c.mode, c.rigHandle)
+	return c.DashboardContext(context.Background())
+}
+
+// DashboardContext fetches the personal dashboard with request tracing.
+func (c *Client) DashboardContext(ctx context.Context) (*commons.DashboardData, error) {
+	_, span := sdkTracer.Start(ctx, "sdk.dashboard", trace.WithAttributes(
+		attribute.String("mode", c.mode),
+	))
+	defer span.End()
+	data, err := commons.QueryMyDashboardBranchAware(c.db, c.mode, c.rigHandle)
+	if err != nil {
+		span.RecordError(err)
+	}
+	return data, err
 }
 
 // Leaderboard returns ranked rig stats aggregated from completions and stamps.
 func (c *Client) Leaderboard(limit int) ([]commons.LeaderboardEntry, error) {
-	return commons.QueryLeaderboard(c.db, limit)
+	return c.LeaderboardContext(context.Background(), limit)
+}
+
+// LeaderboardContext returns ranked rig stats with request tracing.
+func (c *Client) LeaderboardContext(ctx context.Context, limit int) ([]commons.LeaderboardEntry, error) {
+	_, span := sdkTracer.Start(ctx, "sdk.leaderboard")
+	defer span.End()
+	entries, err := commons.QueryLeaderboard(c.db, limit)
+	if err != nil {
+		span.RecordError(err)
+	}
+	return entries, err
 }

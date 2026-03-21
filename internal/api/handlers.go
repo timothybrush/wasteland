@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -11,7 +12,11 @@ import (
 	"github.com/gastownhall/wasteland/internal/commons"
 	"github.com/gastownhall/wasteland/internal/sdk"
 	"github.com/getsentry/sentry-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
+
+var apiTracer = otel.Tracer("github.com/gastownhall/wasteland/internal/api")
 
 // resolveClient extracts the sdk.Client from the request. Returns false if
 // the client cannot be resolved (writes a 401 error to w in that case).
@@ -38,20 +43,28 @@ func (s *Server) resolveClient(w http.ResponseWriter, r *http.Request) (*sdk.Cli
 // --- Read handlers ---
 
 func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
+	ctx, span := apiTracer.Start(r.Context(), "api.browse")
+	defer span.End()
+
 	client, ok := s.resolveClient(w, r)
 	if !ok {
 		return
 	}
+	filter := parseQueryFilter(r)
+	span.SetAttributes(
+		attribute.String("mode", client.Mode()),
+		attribute.String("view", filter.View),
+	)
 	key := client.RigHandle() + ":" + canonicalBrowseKey(r)
-	data, err := s.browseCache.GetOrFetch(key, func() ([]byte, error) {
-		filter := parseQueryFilter(r)
-		result, err := client.Browse(filter)
+	data, err := s.browseCache.GetOrFetchContext(ctx, key, func(ctx context.Context) ([]byte, error) {
+		result, err := client.BrowseContext(ctx, filter)
 		if err != nil {
 			return nil, err
 		}
 		return json.Marshal(toBrowseResponse(result))
 	})
 	if err != nil {
+		span.RecordError(err)
 		// Auth errors should not serve stale data — the user needs to reconnect.
 		if isUpstreamAuthError(err) {
 			writeError(w, http.StatusUnauthorized, "DoltHub credentials expired — please reconnect.")
@@ -96,20 +109,25 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request) {
+	ctx, span := apiTracer.Start(r.Context(), "api.detail")
+	defer span.End()
+
 	client, ok := s.resolveClient(w, r)
 	if !ok {
 		return
 	}
+	span.SetAttributes(attribute.String("mode", client.Mode()))
 	id := r.PathValue("id")
 	key := client.RigHandle() + ":" + id
-	data, err := s.detailCache.GetOrFetch(key, func() ([]byte, error) {
-		result, err := client.Detail(id)
+	data, err := s.detailCache.GetOrFetchContext(ctx, key, func(ctx context.Context) ([]byte, error) {
+		result, err := client.DetailContext(ctx, id)
 		if err != nil {
 			return nil, err
 		}
 		return json.Marshal(toDetailResponse(result, client.Mode()))
 	})
 	if err != nil {
+		span.RecordError(err)
 		if strings.Contains(err.Error(), "not found") {
 			writeError(w, http.StatusNotFound, err.Error())
 			return
@@ -161,8 +179,11 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	data, err := client.Dashboard()
+	ctx, span := apiTracer.Start(r.Context(), "api.dashboard")
+	defer span.End()
+	data, err := client.DashboardContext(ctx)
 	if err != nil {
+		span.RecordError(err)
 		writeUpstreamError(w, err, "dashboard")
 		return
 	}
@@ -174,9 +195,12 @@ func (s *Server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	ctx, span := apiTracer.Start(r.Context(), "api.leaderboard")
+	defer span.End()
 	limit := parseIntParam(r, "limit", 20)
-	entries, err := client.Leaderboard(limit)
+	entries, err := client.LeaderboardContext(ctx, limit)
 	if err != nil {
+		span.RecordError(err)
 		writeUpstreamError(w, err, "leaderboard")
 		return
 	}
@@ -184,6 +208,10 @@ func (s *Server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	ctx, span := apiTracer.Start(r.Context(), "api.config")
+	defer span.End()
+	r = r.WithContext(ctx)
+
 	client, ok := s.resolveClient(w, r)
 	if !ok {
 		return
@@ -209,6 +237,8 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 					Mode:     info.Mode,
 				}
 			}
+		} else if err != nil && !errors.Is(err, context.Canceled) {
+			span.RecordError(err)
 		}
 	}
 

@@ -864,6 +864,9 @@ func TestCORSMiddleware(t *testing.T) {
 	if resp.Header.Get("Access-Control-Allow-Origin") != "*" {
 		t.Error("expected CORS Allow-Origin header")
 	}
+	if got := resp.Header.Get("Access-Control-Allow-Headers"); !strings.Contains(got, "Traceparent") {
+		t.Fatalf("expected Traceparent in CORS headers, got %q", got)
+	}
 }
 
 func TestLeaderboard(t *testing.T) {

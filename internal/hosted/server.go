@@ -105,7 +105,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Read-modify-write: preserve existing wastelands, upsert the new one.
-	apiKey, meta, err := s.nango.GetConnection(req.ConnectionID)
+	apiKey, meta, err := s.nango.GetConnectionContext(r.Context(), req.ConnectionID)
 	if err != nil || meta == nil {
 		meta = &UserMetadata{RigHandle: req.RigHandle}
 	}
@@ -125,7 +125,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		ForkDB:   req.ForkDB,
 		Mode:     mode,
 	})
-	if err := s.nango.SetMetadata(req.ConnectionID, meta); err != nil {
+	if err := s.nango.SetMetadataContext(r.Context(), req.ConnectionID, meta); err != nil {
 		slog.Error("nango: failed to save metadata", "error", err, "connection_id", req.ConnectionID)
 		sentry.CaptureException(err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save config: " + err.Error()})
@@ -189,7 +189,7 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch metadata from Nango.
-	_, meta, err := s.nango.GetConnection(session.ConnectionID)
+	_, meta, err := s.nango.GetConnectionContext(r.Context(), session.ConnectionID)
 	if err != nil {
 		// Nango call failed -- report as not connected so frontend can re-auth.
 		writeJSON(w, http.StatusOK, authStatusResponse{Authenticated: true, Connected: false, Environment: s.environment})
@@ -243,7 +243,7 @@ func (s *Server) handleConnectSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := s.nango.CreateConnectSession(req.EndUserID)
+	token, err := s.nango.CreateConnectSessionContext(r.Context(), req.EndUserID)
 	if err != nil {
 		slog.Error("nango: failed to create connect session", "error", err, "end_user_id", req.EndUserID)
 		sentry.CaptureException(err)
@@ -309,7 +309,7 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch current metadata, upsert the new wasteland, write back.
-	apiKey, meta, err := s.nango.GetConnection(session.ConnectionID)
+	apiKey, meta, err := s.nango.GetConnectionContext(r.Context(), session.ConnectionID)
 	if err != nil {
 		slog.Error("nango: failed to read metadata", "error", err, "connection_id", session.ConnectionID)
 		sentry.CaptureException(err)
@@ -336,7 +336,7 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 		Mode:     mode,
 	})
 
-	if err := s.nango.SetMetadata(session.ConnectionID, meta); err != nil {
+	if err := s.nango.SetMetadataContext(r.Context(), session.ConnectionID, meta); err != nil {
 		slog.Error("nango: failed to save metadata", "error", err, "connection_id", session.ConnectionID)
 		sentry.CaptureException(err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save metadata: " + err.Error()})
@@ -390,7 +390,7 @@ func (s *Server) handleLeaveWasteland(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch current metadata, remove the wasteland, write back.
-	_, meta, err := s.nango.GetConnection(session.ConnectionID)
+	_, meta, err := s.nango.GetConnectionContext(r.Context(), session.ConnectionID)
 	if err != nil {
 		slog.Error("nango: failed to read metadata", "error", err, "connection_id", session.ConnectionID)
 		sentry.CaptureException(err)
@@ -412,7 +412,7 @@ func (s *Server) handleLeaveWasteland(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.nango.SetMetadata(session.ConnectionID, meta); err != nil {
+	if err := s.nango.SetMetadataContext(r.Context(), session.ConnectionID, meta); err != nil {
 		slog.Error("nango: failed to save metadata", "error", err, "connection_id", session.ConnectionID)
 		sentry.CaptureException(err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save metadata: " + err.Error()})

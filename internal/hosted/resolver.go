@@ -1,6 +1,7 @@
 package hosted
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -9,12 +10,22 @@ import (
 
 	"github.com/gastownhall/wasteland/internal/backend"
 	"github.com/gastownhall/wasteland/internal/commons"
+	"github.com/gastownhall/wasteland/internal/ctxutil"
 	"github.com/gastownhall/wasteland/internal/federation"
 	"github.com/gastownhall/wasteland/internal/remote"
 	"github.com/gastownhall/wasteland/internal/sdk"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/singleflight"
 )
 
-const cacheTTL = 1 * time.Minute
+const (
+	cacheTTL           = 1 * time.Minute
+	resolveMissTimeout = 30 * time.Second
+)
+
+var hostedTracer = otel.Tracer("github.com/gastownhall/wasteland/internal/hosted")
 
 type cachedWorkspace struct {
 	workspace *sdk.Workspace
@@ -27,6 +38,7 @@ type WorkspaceResolver struct {
 	sessions *SessionStore
 	mu       sync.Mutex
 	cache    map[string]*cachedWorkspace // connectionID -> cached workspace
+	group    singleflight.Group
 
 	pendingMu    sync.Mutex
 	pendingCache map[string]*pendingUpstreamCache // upstream ("org/db") -> shared cache
@@ -109,37 +121,77 @@ func NewWorkspaceResolver(nango *NangoClient, sessions *SessionStore) *Workspace
 
 // Resolve builds or returns a cached sdk.Workspace for the given session.
 func (wr *WorkspaceResolver) Resolve(session *UserSession) (*sdk.Workspace, error) {
-	// Fast path: return cached workspace if still valid.
-	wr.mu.Lock()
-	if cached, ok := wr.cache[session.ConnectionID]; ok && time.Now().Before(cached.expiresAt) {
-		wr.mu.Unlock()
-		return cached.workspace, nil
-	}
-	wr.mu.Unlock()
+	return wr.ResolveContext(context.Background(), session)
+}
 
-	// Fetch metadata and API key from Nango (no lock held during network call).
-	apiKey, meta, err := wr.nango.GetConnection(session.ConnectionID)
+// ResolveContext builds or returns a cached sdk.Workspace for the given session.
+func (wr *WorkspaceResolver) ResolveContext(ctx context.Context, session *UserSession) (*sdk.Workspace, error) {
+	ctx, span := hostedTracer.Start(ctx, "hosted.workspace.resolve")
+	defer span.End()
+
+	// Fast path: return cached workspace if still valid.
+	if cached, ok := wr.cachedWorkspace(session.ConnectionID); ok {
+		span.SetAttributes(attribute.Bool("cache.hit", true))
+		return cached, nil
+	}
+	span.SetAttributes(attribute.Bool("cache.hit", false))
+
+	resultCh := wr.group.DoChan(session.ConnectionID, func() (any, error) {
+		resolveCtx, cancel := ctxutil.Detached(ctx, resolveMissTimeout)
+		defer cancel()
+		return wr.resolveMiss(resolveCtx, session)
+	})
+	return wr.waitOnResolveResult(ctx, span, resultCh)
+}
+
+func (wr *WorkspaceResolver) waitOnResolveResult(ctx context.Context, span trace.Span, resultCh <-chan singleflight.Result) (*sdk.Workspace, error) {
+	_, waitSpan := hostedTracer.Start(ctx, "hosted.workspace.wait_for_resolve")
+	defer waitSpan.End()
+
+	select {
+	case result := <-resultCh:
+		waitSpan.SetAttributes(attribute.Bool("singleflight.shared", result.Shared))
+		span.SetAttributes(attribute.Bool("singleflight.shared", result.Shared))
+		if result.Err != nil {
+			waitSpan.RecordError(result.Err)
+			span.RecordError(result.Err)
+			return nil, result.Err
+		}
+		workspace, _ := result.Val.(*sdk.Workspace)
+		return workspace, nil
+	case <-ctx.Done():
+		waitSpan.RecordError(ctx.Err())
+		span.RecordError(ctx.Err())
+		return nil, ctx.Err()
+	}
+}
+
+func (wr *WorkspaceResolver) resolveMiss(ctx context.Context, session *UserSession) (*sdk.Workspace, error) {
+	resolveCtx, resolveSpan := hostedTracer.Start(ctx, "hosted.workspace.resolve_miss")
+	defer resolveSpan.End()
+
+	// Re-check cache inside the winner path in case another request warmed it.
+	if cached, ok := wr.cachedWorkspace(session.ConnectionID); ok {
+		resolveSpan.SetAttributes(attribute.Bool("cache.hit", true))
+		return cached, nil
+	}
+	resolveSpan.SetAttributes(attribute.Bool("cache.hit", false))
+
+	apiKey, meta, err := wr.nango.GetConnectionContext(resolveCtx, session.ConnectionID)
 	if err != nil {
+		resolveSpan.RecordError(err)
 		return nil, fmt.Errorf("resolving credentials: %w", err)
 	}
 	if meta == nil || len(meta.Wastelands) == 0 {
 		return nil, fmt.Errorf("no wasteland config found for connection %s", session.ConnectionID)
 	}
 
-	// Re-check cache under lock to avoid duplicate workspace creation (TOCTOU).
-	wr.mu.Lock()
-	defer wr.mu.Unlock()
-
-	if cached, ok := wr.cache[session.ConnectionID]; ok && time.Now().Before(cached.expiresAt) {
-		return cached.workspace, nil
-	}
-
-	// Build a new workspace with a client for each wasteland.
 	ws := sdk.NewWorkspace(meta.RigHandle)
 	for i := range meta.Wastelands {
 		wl := &meta.Wastelands[i]
 		client, err := wr.buildClient(wl, meta.RigHandle, session.ConnectionID, apiKey, meta)
 		if err != nil {
+			resolveSpan.RecordError(err)
 			return nil, fmt.Errorf("building client for %s: %w", wl.Upstream, err)
 		}
 		ws.Add(sdk.UpstreamInfo{
@@ -150,10 +202,8 @@ func (wr *WorkspaceResolver) Resolve(session *UserSession) (*sdk.Workspace, erro
 		}, client)
 	}
 
-	wr.cache[session.ConnectionID] = &cachedWorkspace{
-		workspace: ws,
-		expiresAt: time.Now().Add(cacheTTL),
-	}
+	resolveSpan.SetAttributes(attribute.Int("wasteland.count", len(meta.Wastelands)))
+	wr.cacheWorkspace(session.ConnectionID, ws)
 	return ws, nil
 }
 
@@ -162,6 +212,29 @@ func (wr *WorkspaceResolver) InvalidateConnection(connectionID string) {
 	wr.mu.Lock()
 	defer wr.mu.Unlock()
 	delete(wr.cache, connectionID)
+}
+
+func (wr *WorkspaceResolver) cachedWorkspace(connectionID string) (*sdk.Workspace, bool) {
+	wr.mu.Lock()
+	defer wr.mu.Unlock()
+
+	cached, ok := wr.cache[connectionID]
+	if !ok || time.Now().After(cached.expiresAt) {
+		if ok {
+			delete(wr.cache, connectionID)
+		}
+		return nil, false
+	}
+	return cached.workspace, true
+}
+
+func (wr *WorkspaceResolver) cacheWorkspace(connectionID string, ws *sdk.Workspace) {
+	wr.mu.Lock()
+	defer wr.mu.Unlock()
+	wr.cache[connectionID] = &cachedWorkspace{
+		workspace: ws,
+		expiresAt: time.Now().Add(cacheTTL),
+	}
 }
 
 // getOrCreatePendingCache returns a shared background-refreshing cache for the

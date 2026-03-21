@@ -1,9 +1,14 @@
 package api
 
 import (
+	"context"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/gastownhall/wasteland/internal/ctxutil"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ReadCache is a keyed read-through cache with TTL and thundering-herd
@@ -22,12 +27,16 @@ type cacheEntry struct {
 	storedAt time.Time
 }
 
+var readCacheTracer = otel.Tracer("github.com/gastownhall/wasteland/internal/api/read_cache")
+
+const readCacheFetchTimeout = 30 * time.Second
+
 // call represents an in-flight fetch. Multiple concurrent callers for the
-// same key share a single call via WaitGroup.
+// same key share a single fetch and wait independently on its completion.
 type call struct {
-	wg  sync.WaitGroup
-	val []byte
-	err error
+	done chan struct{}
+	val  []byte
+	err  error
 }
 
 // NewReadCache creates a cache that keeps entries for maxAge and evicts the
@@ -71,8 +80,16 @@ func (c *ReadCache) GetStale(key string) []byte {
 // Concurrent callers for the same key are coalesced: only the first caller
 // runs fn while the rest block on its result (singleflight pattern).
 func (c *ReadCache) GetOrFetch(key string, fn func() ([]byte, error)) ([]byte, error) {
+	return c.GetOrFetchContext(context.Background(), key, func(context.Context) ([]byte, error) {
+		return fn()
+	})
+}
+
+// GetOrFetchContext is GetOrFetch with context-aware tracing for cache misses.
+func (c *ReadCache) GetOrFetchContext(ctx context.Context, key string, fn func(context.Context) ([]byte, error)) ([]byte, error) {
 	// Fast path: cache hit.
 	if data := c.Get(key); data != nil {
+		trace.SpanFromContext(ctx).AddEvent("read_cache.hit")
 		return data, nil
 	}
 
@@ -80,38 +97,28 @@ func (c *ReadCache) GetOrFetch(key string, fn func() ([]byte, error)) ([]byte, e
 	// Double-check after acquiring lock.
 	if e, ok := c.entries[key]; ok && time.Since(e.storedAt) <= c.maxAge {
 		c.mu.Unlock()
+		trace.SpanFromContext(ctx).AddEvent("read_cache.hit")
 		return e.data, nil
 	}
 
 	// Join an in-flight fetch if one exists.
 	if cl, ok := c.inflight[key]; ok {
 		c.mu.Unlock()
-		cl.wg.Wait()
-		return cl.val, cl.err
+		trace.SpanFromContext(ctx).AddEvent("read_cache.wait_inflight")
+		return waitForCall(ctx, cl)
 	}
 
 	// First caller: create a new in-flight entry.
-	cl := &call{}
-	cl.wg.Add(1)
+	cl := &call{done: make(chan struct{})}
 	c.inflight[key] = cl
 	c.mu.Unlock()
 
-	// Execute the fetch outside the lock.
-	cl.val, cl.err = fn()
-	if cl.err == nil {
-		c.mu.Lock()
-		c.entries[key] = &cacheEntry{data: cl.val, storedAt: time.Now()}
-		c.evictLocked()
-		c.mu.Unlock()
-	}
-
-	// Wake all waiters and remove the in-flight entry.
-	cl.wg.Done()
-	c.mu.Lock()
-	delete(c.inflight, key)
-	c.mu.Unlock()
-
-	return cl.val, cl.err
+	go func() {
+		fetchCtx, cancel := ctxutil.Detached(ctx, readCacheFetchTimeout)
+		defer cancel()
+		c.runFetch(fetchCtx, key, cl, fn)
+	}()
+	return waitForCall(ctx, cl)
 }
 
 // Invalidate clears all cached entries.
@@ -126,6 +133,39 @@ func (c *ReadCache) InvalidateKey(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.entries, key)
+}
+
+func (c *ReadCache) runFetch(ctx context.Context, key string, cl *call, fn func(context.Context) ([]byte, error)) {
+	defer close(cl.done)
+
+	fetchCtx, span := readCacheTracer.Start(ctx, "read_cache.fetch")
+	cl.val, cl.err = fn(fetchCtx)
+	if cl.err != nil {
+		span.RecordError(cl.err)
+	}
+	span.End()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.inflight, key)
+	if cl.err == nil {
+		c.entries[key] = &cacheEntry{data: cl.val, storedAt: time.Now()}
+		c.evictLocked()
+	}
+}
+
+func waitForCall(ctx context.Context, cl *call) ([]byte, error) {
+	select {
+	case <-cl.done:
+		return cl.val, cl.err
+	case <-ctx.Done():
+		select {
+		case <-cl.done:
+			return cl.val, cl.err
+		default:
+		}
+		return nil, ctx.Err()
+	}
 }
 
 // evictLocked removes the oldest entries when the cache exceeds maxEntries.

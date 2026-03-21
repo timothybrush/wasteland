@@ -1,9 +1,13 @@
 package hosted
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -128,6 +132,282 @@ func TestWorkspaceResolver_CachesWorkspace(t *testing.T) {
 	// Should get the same cached instance.
 	if ws1 != ws2 {
 		t.Error("expected same workspace instance from cache")
+	}
+}
+
+func TestWorkspaceResolver_Resolve_CoalescesConcurrentMisses(t *testing.T) {
+	var calls atomic.Int32
+	meta := &UserMetadata{
+		RigHandle: "alice",
+		Wastelands: []WastelandConfig{
+			{
+				Upstream: "hop/wl-commons",
+				ForkOrg:  "alice-org",
+				ForkDB:   "wl-commons",
+				Mode:     "pr",
+			},
+		},
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/connection/conn-1" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		calls.Add(1)
+		time.Sleep(50 * time.Millisecond)
+		resp := nangoConnectionResponse{ConnectionID: "conn-1"}
+		resp.Credentials.APIKey = "token"
+		b, _ := json.Marshal(meta)
+		resp.Metadata = json.RawMessage(b)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer ts.Close()
+
+	nango := NewNangoClient(NangoConfig{
+		BaseURL:       ts.URL,
+		SecretKey:     "secret",
+		IntegrationID: "dolthub",
+	})
+	resolver := NewWorkspaceResolver(nango, NewSessionStore())
+	session := &UserSession{ID: "sess-1", ConnectionID: "conn-1", CreatedAt: time.Now()}
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ws, err := resolver.ResolveContext(context.Background(), session)
+			if err != nil {
+				t.Errorf("ResolveContext() error = %v", err)
+				return
+			}
+			if ws == nil {
+				t.Error("ResolveContext() returned nil workspace")
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("Nango GetConnection calls = %d, want 1", got)
+	}
+}
+
+func TestWorkspaceResolver_ResolveContext_RespectsCancellationWhileWaiting(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	meta := &UserMetadata{
+		RigHandle: "alice",
+		Wastelands: []WastelandConfig{
+			{
+				Upstream: "hop/wl-commons",
+				ForkOrg:  "alice-org",
+				ForkDB:   "wl-commons",
+				Mode:     "pr",
+			},
+		},
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/connection/conn-1" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-release
+		resp := nangoConnectionResponse{ConnectionID: "conn-1"}
+		resp.Credentials.APIKey = "token"
+		b, _ := json.Marshal(meta)
+		resp.Metadata = json.RawMessage(b)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer ts.Close()
+
+	nango := NewNangoClient(NangoConfig{
+		BaseURL:       ts.URL,
+		SecretKey:     "secret",
+		IntegrationID: "dolthub",
+	})
+	resolver := NewWorkspaceResolver(nango, NewSessionStore())
+	session := &UserSession{ID: "sess-1", ConnectionID: "conn-1", CreatedAt: time.Now()}
+
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		_, _ = resolver.ResolveContext(context.Background(), session)
+	}()
+
+	<-started
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := resolver.ResolveContext(ctx, session)
+		errCh <- err
+	}()
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("ResolveContext() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("ResolveContext() did not return after cancellation")
+	}
+
+	close(release)
+	<-firstDone
+}
+
+func TestWorkspaceResolver_ResolveContext_KeepsSharedResolveAliveForActiveWaiters(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	meta := &UserMetadata{
+		RigHandle: "alice",
+		Wastelands: []WastelandConfig{
+			{
+				Upstream: "hop/wl-commons",
+				ForkOrg:  "alice-org",
+				ForkDB:   "wl-commons",
+				Mode:     "pr",
+			},
+		},
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/connection/conn-1" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-release
+		resp := nangoConnectionResponse{ConnectionID: "conn-1"}
+		resp.Credentials.APIKey = "token"
+		b, _ := json.Marshal(meta)
+		resp.Metadata = json.RawMessage(b)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer ts.Close()
+
+	nango := NewNangoClient(NangoConfig{
+		BaseURL:       ts.URL,
+		SecretKey:     "secret",
+		IntegrationID: "dolthub",
+	})
+	resolver := NewWorkspaceResolver(nango, NewSessionStore())
+	session := &UserSession{ID: "sess-1", ConnectionID: "conn-1", CreatedAt: time.Now()}
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := resolver.ResolveContext(leaderCtx, session)
+		leaderDone <- err
+	}()
+
+	<-started
+
+	waiterDone := make(chan error, 1)
+	go func() {
+		_, err := resolver.ResolveContext(context.Background(), session)
+		waiterDone <- err
+	}()
+
+	cancelLeader()
+	close(release)
+
+	if err := <-leaderDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("leader ResolveContext() error = %v, want context.Canceled", err)
+	}
+	if err := <-waiterDone; err != nil {
+		t.Fatalf("waiter ResolveContext() error = %v, want nil", err)
+	}
+}
+
+func TestWorkspaceResolver_ResolveContext_FollowerAfterLeaderCancellationStillSucceeds(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var calls atomic.Int32
+	meta := &UserMetadata{
+		RigHandle: "alice",
+		Wastelands: []WastelandConfig{
+			{
+				Upstream: "hop/wl-commons",
+				ForkOrg:  "alice-org",
+				ForkDB:   "wl-commons",
+				Mode:     "pr",
+			},
+		},
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/connection/conn-1" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		calls.Add(1)
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-release
+		resp := nangoConnectionResponse{ConnectionID: "conn-1"}
+		resp.Credentials.APIKey = "token"
+		b, _ := json.Marshal(meta)
+		resp.Metadata = json.RawMessage(b)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer ts.Close()
+
+	nango := NewNangoClient(NangoConfig{
+		BaseURL:       ts.URL,
+		SecretKey:     "secret",
+		IntegrationID: "dolthub",
+	})
+	resolver := NewWorkspaceResolver(nango, NewSessionStore())
+	session := &UserSession{ID: "sess-1", ConnectionID: "conn-1", CreatedAt: time.Now()}
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := resolver.ResolveContext(leaderCtx, session)
+		leaderDone <- err
+	}()
+
+	<-started
+	cancelLeader()
+
+	if err := <-leaderDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("leader ResolveContext() error = %v, want context.Canceled", err)
+	}
+
+	waiterDone := make(chan error, 1)
+	go func() {
+		_, err := resolver.ResolveContext(context.Background(), session)
+		waiterDone <- err
+	}()
+
+	select {
+	case err := <-waiterDone:
+		t.Fatalf("waiter returned before shared resolve completed: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(release)
+
+	if err := <-waiterDone; err != nil {
+		t.Fatalf("waiter ResolveContext() error = %v, want nil", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("Nango GetConnection calls = %d, want 1", got)
 	}
 }
 
