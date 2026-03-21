@@ -117,6 +117,17 @@ export interface ConfigResponse {
   upstreams?: UpstreamInfo[];
 }
 
+export interface BootstrapResponse {
+  authenticated: boolean;
+  connected: boolean;
+  hosted?: boolean;
+  rig_handle?: string;
+  wastelands?: WastelandConfig[];
+  environment?: string;
+  active_upstream?: string;
+  mode?: string;
+}
+
 export interface WastelandConfig {
   upstream: string;
   fork_org: string;

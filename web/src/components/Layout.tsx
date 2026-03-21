@@ -14,7 +14,7 @@ export function Layout() {
   const [impersonating, setImpersonating] = useState<string>(getImpersonation() ?? "");
   const [impersonateInput, setImpersonateInput] = useState(getImpersonation() ?? "");
   const navigate = useNavigate();
-  const { wastelands, active, authenticated, environment, switchTo } = useWasteland();
+  const { wastelands, active, authenticated, connected, environment, switchTo } = useWasteland();
 
   const { register, getCommands, subscribe } = useCommandRegistry();
   const commands = useSyncExternalStore(subscribe, getCommands);
@@ -142,7 +142,7 @@ export function Layout() {
           <NavLink to="/" end className={({ isActive }) => (isActive ? styles.navLinkActive : styles.navLink)}>
             board
           </NavLink>
-          {authenticated && (
+          {connected && (
             <NavLink to="/me" className={({ isActive }) => (isActive ? styles.navLinkActive : styles.navLink)}>
               me
             </NavLink>
@@ -153,13 +153,13 @@ export function Layout() {
           <NavLink to="/scoreboard" className={({ isActive }) => (isActive ? styles.navLinkActive : styles.navLink)}>
             scoreboard
           </NavLink>
-          {authenticated ? (
+          {connected ? (
             <NavLink to="/settings" className={({ isActive }) => (isActive ? styles.navLinkActive : styles.navLink)}>
               settings
             </NavLink>
           ) : (
             <NavLink to="/connect" className={({ isActive }) => (isActive ? styles.navLinkActive : styles.navLink)}>
-              sign in
+              {authenticated ? "connect" : "sign in"}
             </NavLink>
           )}
           <a

@@ -9,6 +9,14 @@ import { makeConfigResponse, makeDetailResponse, makeItem, mockFetch } from "../
 const mocked = vi.hoisted(() => ({
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
+  wastelandState: {
+    active: null as string | null,
+    authenticated: false,
+    environment: undefined as string | undefined,
+    ready: true,
+    viewerRigHandle: "alice" as string | undefined,
+    wastelands: [] as Array<{ upstream: string }>,
+  },
 }));
 
 vi.mock("sonner", () => ({
@@ -16,6 +24,14 @@ vi.mock("sonner", () => ({
     success: mocked.toastSuccess,
     error: mocked.toastError,
   },
+}));
+
+vi.mock("../context/WastelandContext", () => ({
+  useWasteland: () => ({
+    ...mocked.wastelandState,
+    switchTo: () => {},
+    refresh: async () => {},
+  }),
 }));
 
 import { DetailView } from "./DetailView";
@@ -42,6 +58,14 @@ afterEach(() => {
   localStorage.removeItem("wl_active");
   cleanupFetch?.();
   vi.clearAllMocks();
+  mocked.wastelandState = {
+    active: null,
+    authenticated: false,
+    environment: undefined,
+    ready: true,
+    viewerRigHandle: "alice",
+    wastelands: [],
+  };
 });
 
 describe("DetailView", () => {
@@ -54,8 +78,7 @@ describe("DetailView", () => {
   });
 
   it("renders item title and badges", async () => {
-    cleanupFetch = mockFetch((url) => {
-      if (url.includes("/api/config")) return makeConfigResponse();
+    cleanupFetch = mockFetch(() => {
       return makeDetailResponse({ item: makeItem({ title: "My Task", priority: 1, status: "open", type: "feature" }) });
     });
     renderDetail();
@@ -66,8 +89,7 @@ describe("DetailView", () => {
   });
 
   it("shows error on fetch failure", async () => {
-    cleanupFetch = mockFetch((url) => {
-      if (url.includes("/api/config")) return makeConfigResponse();
+    cleanupFetch = mockFetch(() => {
       return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
     });
     renderDetail();
@@ -75,28 +97,24 @@ describe("DetailView", () => {
   });
 
   it("shows Edit button when canEdit is true", async () => {
-    cleanupFetch = mockFetch((url) => {
-      if (url.includes("/api/config")) return makeConfigResponse({ rig_handle: "alice" });
-      return makeDetailResponse({ item: makeItem({ posted_by: "alice" }) });
-    });
+    mocked.wastelandState.viewerRigHandle = "alice";
+    cleanupFetch = mockFetch(() => makeDetailResponse({ item: makeItem({ posted_by: "alice" }) }));
     renderDetail();
     await waitFor(() => expect(screen.getByText("Edit")).toBeInTheDocument());
   });
 
   it("hides Edit button when poster is different", async () => {
-    cleanupFetch = mockFetch((url) => {
-      if (url.includes("/api/config")) return makeConfigResponse({ rig_handle: "bob" });
-      return makeDetailResponse({ item: makeItem({ posted_by: "alice" }) });
-    });
+    mocked.wastelandState.viewerRigHandle = "bob";
+    cleanupFetch = mockFetch(() => makeDetailResponse({ item: makeItem({ posted_by: "alice" }) }));
     renderDetail();
     await waitFor(() => expect(screen.getByText("Fix the thing")).toBeInTheDocument());
     expect(screen.queryByText("Edit")).not.toBeInTheDocument();
   });
 
   it("shows submission actions for admins when backend allows them", async () => {
-    cleanupFetch = mockFetch((url) => {
-      if (url.includes("/api/config")) return makeConfigResponse({ rig_handle: "admin" });
-      return makeDetailResponse({
+    mocked.wastelandState.viewerRigHandle = "admin";
+    cleanupFetch = mockFetch(() =>
+      makeDetailResponse({
         item: makeItem({ posted_by: "alice", status: "claimed" }),
         actions: ["accept", "reject", "close"],
         upstream_prs: [
@@ -107,8 +125,8 @@ describe("DetailView", () => {
             pr_url: "https://www.dolthub.com/repositories/org/db/pulls/1",
           },
         ],
-      });
-    });
+      }),
+    );
     renderDetail();
     await waitFor(() => expect(screen.getByText("charlie")).toBeInTheDocument(), { timeout: 5000 });
     expect(screen.getByRole("button", { name: "accept" })).toBeInTheDocument();
@@ -117,9 +135,9 @@ describe("DetailView", () => {
   }, 10000);
 
   it("shows submission actions for the poster when backend allows them", async () => {
-    cleanupFetch = mockFetch((url) => {
-      if (url.includes("/api/config")) return makeConfigResponse({ rig_handle: "alice" });
-      return makeDetailResponse({
+    mocked.wastelandState.viewerRigHandle = "alice";
+    cleanupFetch = mockFetch(() =>
+      makeDetailResponse({
         item: makeItem({ posted_by: "alice", status: "claimed" }),
         actions: ["accept", "reject", "close"],
         upstream_prs: [
@@ -130,8 +148,8 @@ describe("DetailView", () => {
             pr_url: "https://www.dolthub.com/repositories/org/db/pulls/1",
           },
         ],
-      });
-    });
+      }),
+    );
     renderDetail();
     await waitFor(() => expect(screen.getByText("charlie")).toBeInTheDocument());
     expect(screen.getByRole("button", { name: "accept" })).toBeInTheDocument();
@@ -140,9 +158,9 @@ describe("DetailView", () => {
   });
 
   it("hides submission actions when backend does not allow them", async () => {
-    cleanupFetch = mockFetch((url) => {
-      if (url.includes("/api/config")) return makeConfigResponse({ rig_handle: "alice" });
-      return makeDetailResponse({
+    mocked.wastelandState.viewerRigHandle = "alice";
+    cleanupFetch = mockFetch(() =>
+      makeDetailResponse({
         item: makeItem({ posted_by: "alice", status: "claimed" }),
         actions: [],
         upstream_prs: [
@@ -153,13 +171,26 @@ describe("DetailView", () => {
             pr_url: "https://www.dolthub.com/repositories/org/db/pulls/1",
           },
         ],
-      });
-    });
+      }),
+    );
     renderDetail();
     await waitFor(() => expect(screen.getByText("charlie")).toBeInTheDocument());
     expect(screen.queryByRole("button", { name: "accept" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "reject" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "close" })).not.toBeInTheDocument();
+  });
+
+  it("does not fetch config on detail load", async () => {
+    const fetchFn = vi.fn((url: string) => {
+      if (url.includes("/api/config")) {
+        throw new Error("config request should not happen");
+      }
+      return makeDetailResponse();
+    });
+    cleanupFetch = mockFetch(fetchFn);
+    renderDetail();
+    await waitFor(() => expect(screen.getByText("Fix the thing")).toBeInTheDocument());
+    expect(fetchFn).not.toHaveBeenCalledWith("/api/config", expect.anything());
   });
 
   it("action buttons trigger API calls", async () => {

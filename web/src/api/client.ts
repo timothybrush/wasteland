@@ -1,6 +1,7 @@
 import * as Sentry from "@sentry/react";
 import type {
   AuthStatusResponse,
+  BootstrapResponse,
   BrowseFilter,
   BrowseResponse,
   ConfigResponse,
@@ -170,6 +171,10 @@ export async function dashboard(): Promise<DashboardResponse> {
 
 export async function config(): Promise<ConfigResponse> {
   return request<ConfigResponse>("/api/config");
+}
+
+export async function bootstrap(): Promise<BootstrapResponse> {
+  return request<BootstrapResponse>("/api/bootstrap");
 }
 
 export async function scoreboard(): Promise<ScoreboardResponse> {

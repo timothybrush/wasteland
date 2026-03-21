@@ -129,6 +129,15 @@ type UpstreamInfoJSON struct {
 	Mode     string `json:"mode"`
 }
 
+// WastelandConfigJSON is the JSON representation of a hosted joined wasteland.
+type WastelandConfigJSON struct {
+	Upstream string `json:"upstream"`
+	ForkOrg  string `json:"fork_org"`
+	ForkDB   string `json:"fork_db"`
+	Mode     string `json:"mode"`
+	Signing  bool   `json:"signing"`
+}
+
 // ConfigResponse is the JSON response for GET /api/config.
 type ConfigResponse struct {
 	RigHandle string             `json:"rig_handle"`
@@ -137,6 +146,18 @@ type ConfigResponse struct {
 	Connected bool               `json:"connected,omitempty"`
 	Upstream  string             `json:"upstream,omitempty"`
 	Upstreams []UpstreamInfoJSON `json:"upstreams,omitempty"`
+}
+
+// BootstrapResponse is the JSON response for GET /api/bootstrap.
+type BootstrapResponse struct {
+	Authenticated  bool                  `json:"authenticated"`
+	Connected      bool                  `json:"connected"`
+	Hosted         bool                  `json:"hosted,omitempty"`
+	RigHandle      string                `json:"rig_handle,omitempty"`
+	Wastelands     []WastelandConfigJSON `json:"wastelands,omitempty"`
+	Environment    string                `json:"environment,omitempty"`
+	ActiveUpstream string                `json:"active_upstream,omitempty"`
+	Mode           string                `json:"mode,omitempty"`
 }
 
 // LeaderboardEntryJSON is the JSON representation of a leaderboard entry.

@@ -117,6 +117,45 @@ func TestNewHostedWorkspace_ConfigIncludesWorkspaceAndActiveUpstream(t *testing.
 	}
 }
 
+func TestBootstrap_ReturnsRigHandleAndNoStore(t *testing.T) {
+	srv := New(newTestClient(newFakeDB()))
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/bootstrap", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("X-Wasteland", "stale/upstream")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/bootstrap: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // test cleanup
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want %q", got, "no-store")
+	}
+
+	var boot BootstrapResponse
+	if err := json.NewDecoder(resp.Body).Decode(&boot); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	if boot.RigHandle != "alice" {
+		t.Fatalf("rig_handle = %q, want %q", boot.RigHandle, "alice")
+	}
+	if !boot.Connected {
+		t.Fatalf("expected connected bootstrap response")
+	}
+	if boot.ActiveUpstream != "stale/upstream" {
+		t.Fatalf("active_upstream = %q, want %q", boot.ActiveUpstream, "stale/upstream")
+	}
+}
+
 func TestSetProfileQuerier_OverridesProfileSource(t *testing.T) {
 	sheetJSON := `{"identity":{"display_name":"Injected"},"value_dimensions":{"quality":0.7}}`
 	pq := &fakePileQuerier{rows: map[string][]map[string]any{

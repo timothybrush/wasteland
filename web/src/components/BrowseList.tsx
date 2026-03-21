@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { browse } from "../api/client";
 import { consumePrefetch } from "../api/prefetch";
 import type { PendingItemSummary, WantedSummary } from "../api/types";
+import { useWasteland } from "../context/WastelandContext";
 import { useFilterParams } from "../hooks/useFilterParams";
 import styles from "./BrowseList.module.css";
 import { EmptyState } from "./EmptyState";
@@ -15,6 +16,7 @@ import { WantedForm } from "./WantedForm";
 
 export function BrowseList() {
   const navigate = useNavigate();
+  const { active, ready } = useWasteland();
   const [items, setItems] = useState<WantedSummary[]>([]);
   const [filter, setFilter] = useFilterParams();
   const [loading, setLoading] = useState(true);
@@ -33,12 +35,13 @@ export function BrowseList() {
   }, []);
 
   const load = useCallback(async () => {
+    if (!ready) return;
     if (!hasLoadedRef.current) setLoading(true);
     setError("");
     setWarning("");
     try {
       // On first load with default filters, use prefetched data if available.
-      const prefetched = !hasLoadedRef.current ? consumePrefetch() : null;
+      const prefetched = !hasLoadedRef.current ? consumePrefetch(active) : null;
       const resp = (prefetched && (await prefetched)) || (await browse(filter));
       setItems(resp.items);
       if (resp.warning) setWarning(resp.warning);
@@ -51,7 +54,7 @@ export function BrowseList() {
     } finally {
       setLoading(false);
     }
-  }, [filter, setSelection]);
+  }, [active, filter, ready, setSelection]);
 
   useEffect(() => {
     load();
@@ -59,7 +62,7 @@ export function BrowseList() {
 
   // Silent background poll — no loading spinner, no error toasts.
   useEffect(() => {
-    if (loading || !hasLoadedRef.current) return;
+    if (!ready || loading || !hasLoadedRef.current) return;
     const id = setInterval(() => {
       if (document.hidden) return;
       browse(filter)
@@ -70,7 +73,7 @@ export function BrowseList() {
         .catch(() => {});
     }, 30_000);
     return () => clearInterval(id);
-  }, [filter, loading, setSelection]);
+  }, [filter, loading, ready, setSelection]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {

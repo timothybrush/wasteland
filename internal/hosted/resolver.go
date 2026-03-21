@@ -144,6 +144,28 @@ func (wr *WorkspaceResolver) ResolveContext(ctx context.Context, session *UserSe
 	return wr.waitOnResolveResult(ctx, span, resultCh)
 }
 
+// WarmSession primes the workspace cache using metadata already fetched on the
+// boot path. It shares the same singleflight key as live resolves.
+func (wr *WorkspaceResolver) WarmSession(session *UserSession, apiKey string, meta *UserMetadata) {
+	if session == nil || session.ConnectionID == "" || meta == nil || len(meta.Wastelands) == 0 {
+		return
+	}
+	go func() {
+		ctx, cancel := ctxutil.Detached(context.Background(), resolveMissTimeout)
+		defer cancel()
+		if _, ok := wr.cachedWorkspace(session.ConnectionID); ok {
+			return
+		}
+		resultCh := wr.group.DoChan(session.ConnectionID, func() (any, error) {
+			return wr.resolveFromMetadata(ctx, session.ConnectionID, apiKey, meta)
+		})
+		select {
+		case <-resultCh:
+		case <-ctx.Done():
+		}
+	}()
+}
+
 func (wr *WorkspaceResolver) waitOnResolveResult(ctx context.Context, span trace.Span, resultCh <-chan singleflight.Result) (*sdk.Workspace, error) {
 	_, waitSpan := hostedTracer.Start(ctx, "hosted.workspace.wait_for_resolve")
 	defer waitSpan.End()
@@ -182,16 +204,25 @@ func (wr *WorkspaceResolver) resolveMiss(ctx context.Context, session *UserSessi
 		resolveSpan.RecordError(err)
 		return nil, fmt.Errorf("resolving credentials: %w", err)
 	}
+	workspace, err := wr.resolveFromMetadata(resolveCtx, session.ConnectionID, apiKey, meta)
+	if err != nil {
+		resolveSpan.RecordError(err)
+		return nil, err
+	}
+	resolveSpan.SetAttributes(attribute.Int("wasteland.count", len(meta.Wastelands)))
+	return workspace, nil
+}
+
+func (wr *WorkspaceResolver) resolveFromMetadata(_ context.Context, connectionID, apiKey string, meta *UserMetadata) (*sdk.Workspace, error) {
 	if meta == nil || len(meta.Wastelands) == 0 {
-		return nil, fmt.Errorf("no wasteland config found for connection %s", session.ConnectionID)
+		return nil, fmt.Errorf("no wasteland config found for connection %s", connectionID)
 	}
 
 	ws := sdk.NewWorkspace(meta.RigHandle)
 	for i := range meta.Wastelands {
 		wl := &meta.Wastelands[i]
-		client, err := wr.buildClient(wl, meta.RigHandle, session.ConnectionID, apiKey, meta)
+		client, err := wr.buildClient(wl, meta.RigHandle, connectionID, apiKey, meta)
 		if err != nil {
-			resolveSpan.RecordError(err)
 			return nil, fmt.Errorf("building client for %s: %w", wl.Upstream, err)
 		}
 		ws.Add(sdk.UpstreamInfo{
@@ -202,8 +233,7 @@ func (wr *WorkspaceResolver) resolveMiss(ctx context.Context, session *UserSessi
 		}, client)
 	}
 
-	resolveSpan.SetAttributes(attribute.Int("wasteland.count", len(meta.Wastelands)))
-	wr.cacheWorkspace(session.ConnectionID, ws)
+	wr.cacheWorkspace(connectionID, ws)
 	return ws, nil
 }
 

@@ -9,7 +9,6 @@ import {
   claim,
   close,
   closeUpstream,
-  config,
   deleteItem,
   detail,
   discardBranch,
@@ -21,6 +20,7 @@ import {
   unclaim,
 } from "../api/client";
 import type { DetailResponse, MutationResponse } from "../api/types";
+import { useWasteland } from "../context/WastelandContext";
 import { ActionButton } from "./ActionButton";
 import { ConfirmDialog } from "./ConfirmDialog";
 import styles from "./DetailView.module.css";
@@ -41,6 +41,7 @@ const actionStatusMap: Record<string, string> = {
 export function DetailView() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { active, ready, viewerRigHandle } = useWasteland();
   const [data, setData] = useState<DetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -51,21 +52,16 @@ export function DetailView() {
   const [showDoneForm, setShowDoneForm] = useState(false);
   const [showEditForm, setShowEditForm] = useState(false);
   const [doneSubmitting, setDoneSubmitting] = useState(false);
-  const [rigHandle, setRigHandle] = useState("");
 
   const [optimisticStatus, setOptimisticStatus] = useOptimistic(
     data?.item?.status ?? "",
     (_current: string, next: string) => next,
   );
 
-  useEffect(() => {
-    config()
-      .then((c) => setRigHandle(c.rig_handle))
-      .catch(() => {});
-  }, []);
-
   const load = useCallback(async () => {
-    if (!id) return;
+    if (!id || !ready) return;
+    const currentUpstream = active;
+    void currentUpstream;
     setLoading(true);
     setError("");
     try {
@@ -75,7 +71,7 @@ export function DetailView() {
     } finally {
       setLoading(false);
     }
-  }, [id]);
+  }, [active, id, ready]);
 
   useEffect(() => {
     load();
@@ -237,7 +233,7 @@ export function DetailView() {
   } = data;
   const branchActions = branch_actions || [];
   const displayStatus = optimisticStatus || item.status;
-  const canEdit = rigHandle && rigHandle === item.posted_by;
+  const canEdit = Boolean(viewerRigHandle) && viewerRigHandle === item.posted_by;
 
   return (
     <div className={styles.page}>

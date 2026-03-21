@@ -1,6 +1,7 @@
 import { type RenderOptions, render } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type {
+  BootstrapResponse,
   BrowseResponse,
   ConfigResponse,
   DashboardResponse,
@@ -96,6 +97,16 @@ export function makeConfigResponse(overrides: Partial<ConfigResponse> = {}): Con
   return {
     rig_handle: "alice",
     mode: "wild-west",
+    ...overrides,
+  };
+}
+
+export function makeBootstrapResponse(overrides: Partial<BootstrapResponse> = {}): BootstrapResponse {
+  return {
+    authenticated: true,
+    connected: true,
+    rig_handle: "alice",
+    wastelands: [],
     ...overrides,
   };
 }

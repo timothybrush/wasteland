@@ -190,6 +190,35 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toDashboardResponse(data))
 }
 
+func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
+	ctx, span := apiTracer.Start(r.Context(), "api.bootstrap")
+	defer span.End()
+	r = r.WithContext(ctx)
+
+	var client *sdk.Client
+	resolved, err := s.clientFunc(r)
+	if err == nil {
+		client = resolved
+	} else if s.publicClient != nil {
+		client = s.publicClient
+	}
+
+	resp := BootstrapResponse{
+		Hosted: s.hosted,
+	}
+	if client != nil {
+		resp.Connected = true
+		resp.RigHandle = client.RigHandle()
+		resp.Mode = client.Mode()
+	}
+	if upstream := r.Header.Get("X-Wasteland"); upstream != "" {
+		resp.ActiveUpstream = upstream
+	}
+
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (s *Server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 	client, ok := s.resolveClient(w, r)
 	if !ok {

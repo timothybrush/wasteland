@@ -52,6 +52,7 @@ func (s *Server) Handler(apiServer *api.Server, assets fs.FS) http.Handler {
 	// Auth endpoints (no auth middleware required, strict rate limit).
 	mux.Handle("POST /api/auth/connect", authRL(http.HandlerFunc(s.handleConnect)))
 	mux.Handle("GET /api/auth/status", authRL(http.HandlerFunc(s.handleAuthStatus)))
+	mux.Handle("GET /api/bootstrap", generalRL(http.HandlerFunc(s.handleBootstrap)))
 	mux.Handle("POST /api/auth/logout", authRL(http.HandlerFunc(s.handleLogout)))
 	mux.Handle("POST /api/auth/connect-session", authRL(http.HandlerFunc(s.handleConnectSession)))
 	mux.Handle("POST /api/auth/join", authRL(http.HandlerFunc(s.handleJoin)))
@@ -152,6 +153,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	SetSessionCookie(w, sessionID, req.ConnectionID, s.sessionSecret)
+	s.sessions.RememberActiveUpstream(sessionID, req.Upstream)
 
 	resp := map[string]string{"status": "connected"}
 	if setupWarning != "" {
@@ -167,6 +169,57 @@ type authStatusResponse struct {
 	RigHandle     string            `json:"rig_handle,omitempty"`
 	Wastelands    []WastelandConfig `json:"wastelands,omitempty"`
 	Environment   string            `json:"environment,omitempty"`
+}
+
+func (s *Server) restoreSession(r *http.Request) (string, *UserSession, bool) {
+	sessionID, connectionID, ok := ReadSessionCookie(r, s.sessionSecret)
+	if !ok {
+		return "", nil, false
+	}
+
+	session, ok := s.sessions.Get(sessionID)
+	if ok {
+		return sessionID, session, true
+	}
+	if connectionID == "" {
+		return "", nil, false
+	}
+	if _, _, err := s.nango.GetConnectionContext(r.Context(), connectionID); err != nil {
+		return "", nil, false
+	}
+	s.sessions.Restore(sessionID, connectionID)
+	session, ok = s.sessions.Get(sessionID)
+	if !ok {
+		return "", nil, false
+	}
+	return sessionID, session, true
+}
+
+func activeBootstrapUpstream(headerUpstream, remembered string, wastelands []WastelandConfig) (string, string) {
+	findMode := func(upstream string) string {
+		for _, wl := range wastelands {
+			if wl.Upstream == upstream {
+				return wl.Mode
+			}
+		}
+		return ""
+	}
+	hasUpstream := func(upstream string) bool {
+		return findMode(upstream) != ""
+	}
+
+	switch {
+	case headerUpstream != "" && hasUpstream(headerUpstream):
+		return headerUpstream, findMode(headerUpstream)
+	case remembered != "" && hasUpstream(remembered):
+		return remembered, findMode(remembered)
+	case len(wastelands) == 1:
+		return wastelands[0].Upstream, wastelands[0].Mode
+	case len(wastelands) > 0:
+		return wastelands[0].Upstream, wastelands[0].Mode
+	default:
+		return "", ""
+	}
 }
 
 // handleAuthStatus returns the current session state.
@@ -208,6 +261,63 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 		Wastelands:    meta.Wastelands,
 		Environment:   s.environment,
 	})
+}
+
+// handleBootstrap returns boot metadata and the selected upstream.
+func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
+	ctx, span := hostedTracer.Start(r.Context(), "hosted.bootstrap")
+	defer span.End()
+	r = r.WithContext(ctx)
+
+	w.Header().Set("Cache-Control", "no-store")
+
+	resp := api.BootstrapResponse{
+		Hosted:      true,
+		Environment: s.environment,
+	}
+
+	sessionID, session, ok := s.restoreSession(r)
+	if !ok {
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	resp.Authenticated = true
+
+	if session.ConnectionID == "" {
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	apiKey, meta, err := s.nango.GetConnectionContext(r.Context(), session.ConnectionID)
+	if err != nil || meta == nil {
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	resp.Connected = true
+	resp.RigHandle = meta.RigHandle
+	resp.Wastelands = make([]api.WastelandConfigJSON, len(meta.Wastelands))
+	for i, wl := range meta.Wastelands {
+		resp.Wastelands[i] = api.WastelandConfigJSON{
+			Upstream: wl.Upstream,
+			ForkOrg:  wl.ForkOrg,
+			ForkDB:   wl.ForkDB,
+			Mode:     wl.Mode,
+			Signing:  wl.Signing,
+		}
+	}
+
+	resp.ActiveUpstream, resp.Mode = activeBootstrapUpstream(
+		r.Header.Get("X-Wasteland"),
+		s.sessions.ActiveUpstream(sessionID),
+		meta.Wastelands,
+	)
+	if resp.ActiveUpstream != "" {
+		s.sessions.RememberActiveUpstream(sessionID, resp.ActiveUpstream)
+		s.resolver.WarmSession(session, apiKey, meta)
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleLogout destroys the session.

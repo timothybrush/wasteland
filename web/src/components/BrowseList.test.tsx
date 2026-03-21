@@ -8,6 +8,19 @@ import { BrowseList } from "./BrowseList";
 
 const defaultCommands = { commands: [], register: () => () => {} };
 
+vi.mock("../context/WastelandContext", () => ({
+  useWasteland: () => ({
+    active: null,
+    authenticated: false,
+    environment: undefined,
+    ready: true,
+    viewerRigHandle: undefined,
+    wastelands: [],
+    switchTo: () => {},
+    refresh: async () => {},
+  }),
+}));
+
 function renderBrowse() {
   return render(
     <MemoryRouter initialEntries={["/"]}>

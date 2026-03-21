@@ -3,6 +3,7 @@ package api
 // registerRoutes wires all API endpoints onto the server mux.
 func (s *Server) registerRoutes() {
 	// Read endpoints.
+	s.mux.HandleFunc("GET /api/bootstrap", s.handleBootstrap)
 	s.mux.HandleFunc("GET /api/wanted", s.handleBrowse)
 	s.mux.HandleFunc("GET /api/wanted/{id}", s.handleDetail)
 	s.mux.HandleFunc("GET /api/dashboard", s.handleDashboard)

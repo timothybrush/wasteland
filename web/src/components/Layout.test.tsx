@@ -12,6 +12,7 @@ const mocked = vi.hoisted(() => ({
     wastelands: [] as Array<{ upstream: string }>,
     active: null as string | null,
     authenticated: false,
+    connected: false,
     environment: undefined as string | undefined,
   },
 }));
@@ -75,6 +76,7 @@ afterEach(() => {
     wastelands: [],
     active: null,
     authenticated: false,
+    connected: false,
     environment: undefined,
   };
 });
@@ -93,11 +95,28 @@ describe("Layout", () => {
     expect(screen.getByTestId("help-state")).toHaveTextContent("closed");
   }, 10000);
 
+  it("shows connect navigation for authenticated users without a joined wasteland", () => {
+    mocked.wastelandState = {
+      wastelands: [],
+      active: null,
+      authenticated: true,
+      connected: false,
+      environment: undefined,
+    };
+
+    renderLayout("/");
+
+    expect(screen.getByRole("link", { name: "connect" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "settings" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "me" })).not.toBeInTheDocument();
+  });
+
   it("shows authenticated navigation and switches wastelands", async () => {
     mocked.wastelandState = {
       wastelands: [{ upstream: "org/wl-one" }, { upstream: "org/wl-two" }],
       active: "org/wl-one",
       authenticated: true,
+      connected: true,
       environment: undefined,
     };
 
@@ -116,6 +135,7 @@ describe("Layout", () => {
       wastelands: [{ upstream: "org/wl-one" }],
       active: "org/wl-one",
       authenticated: true,
+      connected: true,
       environment: undefined,
     };
 
@@ -130,6 +150,7 @@ describe("Layout", () => {
       wastelands: [],
       active: null,
       authenticated: false,
+      connected: false,
       environment: "staging",
     };
 
@@ -146,6 +167,7 @@ describe("Layout", () => {
       wastelands: [],
       active: null,
       authenticated: false,
+      connected: false,
       environment: "staging",
     };
 
@@ -160,6 +182,7 @@ describe("Layout", () => {
       wastelands: [],
       active: null,
       authenticated: false,
+      connected: false,
       environment: "staging",
     };
 
@@ -177,6 +200,7 @@ describe("Layout", () => {
       wastelands: [],
       active: null,
       authenticated: false,
+      connected: false,
       environment: "staging",
     };
 

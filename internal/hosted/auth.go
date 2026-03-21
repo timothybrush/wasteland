@@ -113,11 +113,14 @@ func (s *Server) AuthMiddleware(next http.Handler) http.Handler {
 		upstream := r.Header.Get("X-Wasteland")
 		upstreams := workspace.Upstreams()
 
-		if upstream == "" && len(upstreams) > 0 && r.Method == http.MethodGet {
-			// Default to first upstream for reads when header is missing
-			// (race with frontend context init, impersonation, or
-			// single-wasteland backward compat).
-			upstream = upstreams[0].Upstream
+		if upstream == "" && r.Method == http.MethodGet {
+			if remembered := s.sessions.ActiveUpstream(sessionID); remembered != "" {
+				upstream = remembered
+			} else if len(upstreams) > 0 {
+				// Default to the first upstream for backward compatibility when
+				// bootstrap has not established an explicit choice yet.
+				upstream = upstreams[0].Upstream
+			}
 		}
 
 		if upstream == "" {
@@ -136,6 +139,7 @@ func (s *Server) AuthMiddleware(next http.Handler) http.Handler {
 			passOrBlock(w, r, http.StatusBadRequest, "unknown upstream: "+upstream)
 			return
 		}
+		s.sessions.RememberActiveUpstream(sessionID, upstream)
 
 		// Staging-only impersonation: X-Impersonate header overrides rig handle
 		// for read-only requests so operators can see the UI as another user.

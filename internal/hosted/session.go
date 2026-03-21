@@ -15,9 +15,10 @@ import (
 
 // UserSession represents an authenticated browser session.
 type UserSession struct {
-	ID           string
-	ConnectionID string // Nango connection ID (set after DoltHub connect)
-	CreatedAt    time.Time
+	ID             string
+	ConnectionID   string // Nango connection ID (set after DoltHub connect)
+	ActiveUpstream string
+	CreatedAt      time.Time
 }
 
 // SessionStore is a thread-safe in-memory session store.
@@ -86,6 +87,25 @@ func (s *SessionStore) Delete(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, id)
+}
+
+// RememberActiveUpstream updates the last selected upstream for a session.
+func (s *SessionStore) RememberActiveUpstream(id, upstream string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess, ok := s.sessions[id]; ok {
+		sess.ActiveUpstream = upstream
+	}
+}
+
+// ActiveUpstream returns the remembered upstream for a session.
+func (s *SessionStore) ActiveUpstream(id string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if sess, ok := s.sessions[id]; ok {
+		return sess.ActiveUpstream
+	}
+	return ""
 }
 
 // Restore re-creates a session from cookie data after a server restart.

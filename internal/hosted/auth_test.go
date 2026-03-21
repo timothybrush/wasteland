@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/gastownhall/wasteland/internal/api"
 )
 
 const testSecret = "test-session-secret"
@@ -83,6 +85,7 @@ func setupHostedTestServer(t *testing.T) (*SessionStore, *httptest.Server) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/auth/connect", server.handleConnect)
 	mux.HandleFunc("GET /api/auth/status", server.handleAuthStatus)
+	mux.HandleFunc("GET /api/bootstrap", server.handleBootstrap)
 	mux.HandleFunc("POST /api/auth/logout", server.handleLogout)
 	mux.HandleFunc("POST /api/auth/connect-session", server.handleConnectSession)
 	mux.HandleFunc("POST /api/auth/join", server.handleJoin)
@@ -148,6 +151,7 @@ func setupMultiWastelandTestServer(t *testing.T) (*SessionStore, *httptest.Serve
 	})
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/bootstrap", server.handleBootstrap)
 	mux.Handle("/", server.AuthMiddleware(inner))
 
 	ts := httptest.NewServer(mux)
@@ -483,6 +487,72 @@ func TestHandleAuthStatus_Authenticated(t *testing.T) {
 	}
 	if status.Wastelands[0].Upstream != "wasteland/wl-commons" {
 		t.Errorf("expected wasteland/wl-commons, got %s", status.Wastelands[0].Upstream)
+	}
+}
+
+func TestHandleBootstrap_Authenticated_RemembersAndReturnsActiveUpstream(t *testing.T) {
+	sessions, ts := setupMultiWastelandTestServer(t)
+
+	sessionID, _ := sessions.Create("conn-1")
+	req, _ := http.NewRequest("GET", ts.URL+"/api/bootstrap", nil)
+	req.Header.Set("X-Wasteland", "gastownhall/gascity")
+	req.AddCookie(&http.Cookie{
+		Name:  cookieName,
+		Value: SignSessionCookie(sessionID, "conn-1", testSecret),
+	})
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // test cleanup
+
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want %q", got, "no-store")
+	}
+
+	var boot api.BootstrapResponse
+	if err := json.NewDecoder(resp.Body).Decode(&boot); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	if !boot.Authenticated || !boot.Connected {
+		t.Fatalf("expected authenticated connected bootstrap, got %+v", boot)
+	}
+	if boot.ActiveUpstream != "gastownhall/gascity" {
+		t.Fatalf("active_upstream = %q, want %q", boot.ActiveUpstream, "gastownhall/gascity")
+	}
+	if boot.Mode != "pr" {
+		t.Fatalf("mode = %q, want %q", boot.Mode, "pr")
+	}
+	if got := sessions.ActiveUpstream(sessionID); got != "gastownhall/gascity" {
+		t.Fatalf("remembered upstream = %q, want %q", got, "gastownhall/gascity")
+	}
+}
+
+func TestHandleBootstrap_UsesRememberedUpstreamWhenHeaderMissing(t *testing.T) {
+	sessions, ts := setupMultiWastelandTestServer(t)
+
+	sessionID, _ := sessions.Create("conn-1")
+	sessions.RememberActiveUpstream(sessionID, "gastownhall/gascity")
+
+	req, _ := http.NewRequest("GET", ts.URL+"/api/bootstrap", nil)
+	req.AddCookie(&http.Cookie{
+		Name:  cookieName,
+		Value: SignSessionCookie(sessionID, "conn-1", testSecret),
+	})
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // test cleanup
+
+	var boot api.BootstrapResponse
+	if err := json.NewDecoder(resp.Body).Decode(&boot); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	if boot.ActiveUpstream != "gastownhall/gascity" {
+		t.Fatalf("active_upstream = %q, want %q", boot.ActiveUpstream, "gastownhall/gascity")
 	}
 }
 

@@ -5,6 +5,7 @@ import {
   acceptUpstream,
   applyBranch,
   authStatus,
+  bootstrap,
   branchDiff,
   browse,
   claim,
@@ -208,6 +209,14 @@ describe("hosted request headers", () => {
       method: "DELETE",
     });
   });
+
+  it("injects hosted headers on bootstrap", async () => {
+    setActiveUpstream("hop/wl-commons");
+    await bootstrap();
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith("/api/bootstrap", {
+      headers: new Headers({ "X-Wasteland": "hop/wl-commons" }),
+    });
+  });
 });
 
 describe("API functions", () => {
@@ -239,6 +248,13 @@ describe("API functions", () => {
   it("config() calls GET /api/config", async () => {
     await config();
     expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith("/api/config", {
+      headers: new Headers(),
+    });
+  });
+
+  it("bootstrap() calls GET /api/bootstrap", async () => {
+    await bootstrap();
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith("/api/bootstrap", {
       headers: new Headers(),
     });
   });
