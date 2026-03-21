@@ -1,7 +1,9 @@
 package remote
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,13 +11,60 @@ import (
 	"time"
 )
 
+type remoteContextKey string
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return fn(req) }
+
 func TestNewDoltHubProviderWithClient_UsesInjectedClient(t *testing.T) {
 	t.Parallel()
 
 	client := &http.Client{Timeout: 123 * time.Millisecond}
 	provider := NewDoltHubProviderWithClient(client)
-	if got := provider.getClient(time.Second); got != client {
-		t.Fatalf("getClient() = %p, want injected client %p", got, client)
+	got := provider.getClient(time.Second)
+	if got == client {
+		t.Fatalf("getClient() = %p, want cloned client distinct from injected %p", got, client)
+	}
+	if got.Timeout != client.Timeout {
+		t.Fatalf("wrapped timeout = %v, want %v", got.Timeout, client.Timeout)
+	}
+	if client.Transport != nil {
+		t.Fatal("expected injected client transport to remain untouched")
+	}
+}
+
+func TestDoltHubProvider_WithContext_BindsOutboundRequests(t *testing.T) {
+	t.Parallel()
+
+	key := remoteContextKey("provider-bound")
+	oldAPI := dolthubAPIBase
+	oldRepo := dolthubRepoBase
+	dolthubAPIBase = "https://api.example"
+	dolthubRepoBase = "https://repo.example"
+	t.Cleanup(func() {
+		dolthubAPIBase = oldAPI
+		dolthubRepoBase = oldRepo
+	})
+
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.Context().Value(key); got != "bound" {
+			t.Fatalf("request context value = %v, want bound", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"status":"ok","_id":"42"}`)),
+		}, nil
+	})}
+
+	provider := NewDoltHubProviderWithClient(client).WithContext(context.WithValue(context.Background(), key, "bound"))
+	url, err := provider.CreatePR("fork-org", "upstream-org", "wl-commons", "wl/alice/w-1", "Title", "Body")
+	if err != nil {
+		t.Fatalf("CreatePR() error = %v", err)
+	}
+	if url != "https://repo.example/upstream-org/wl-commons/pulls/42" {
+		t.Fatalf("CreatePR() URL = %q", url)
 	}
 }
 

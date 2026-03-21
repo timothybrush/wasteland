@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	cacheTTL           = 1 * time.Minute
-	resolveMissTimeout = 30 * time.Second
+	cacheTTL              = 1 * time.Minute
+	resolveMissTimeout    = 30 * time.Second
+	pendingRefreshTimeout = 30 * time.Second
 )
 
 var hostedTracer = otel.Tracer("github.com/gastownhall/wasteland/internal/hosted")
@@ -44,56 +45,50 @@ type WorkspaceResolver struct {
 	pendingCache map[string]*pendingUpstreamCache // upstream ("org/db") -> shared cache
 }
 
-// pendingUpstreamCache is a background-refreshing cache of pending items
-// shared across all users on the same upstream.
+// pendingUpstreamCache is a shared pending-items cache that refreshes in the
+// background and can synchronously refresh on cold/stale request reads.
 type pendingUpstreamCache struct {
-	mu     sync.RWMutex
-	cached map[string][]sdk.PendingItem
-	stop   chan struct{}
+	mu          sync.RWMutex
+	cached      map[string][]sdk.PendingItem
+	refreshedAt time.Time
+	provider    *remote.DoltHubProvider
+	upOrg       string
+	upDB        string
+	interval    time.Duration
+	inflight    *pendingRefresh
+	stop        chan struct{}
+	stopOnce    sync.Once
+	wg          sync.WaitGroup
+}
+
+type pendingRefresh struct {
+	done  chan struct{}
+	items map[string][]sdk.PendingItem
+	err   error
 }
 
 func newPendingUpstreamCache(provider *remote.DoltHubProvider, upOrg, upDB string, interval time.Duration) *pendingUpstreamCache {
-	c := &pendingUpstreamCache{stop: make(chan struct{})}
-
-	refresh := func() {
-		states, err := provider.ListPendingWantedIDs(upOrg, upDB)
-		if err != nil {
-			slog.Warn("pending items refresh failed", "upstream", upOrg+"/"+upDB, "error", err)
-			return
-		}
-		result := make(map[string][]sdk.PendingItem, len(states))
-		for id, pending := range states {
-			items := make([]sdk.PendingItem, len(pending))
-			for i, p := range pending {
-				items[i] = sdk.PendingItem{
-					RigHandle:   p.RigHandle,
-					Status:      p.Status,
-					ClaimedBy:   p.ClaimedBy,
-					Branch:      p.Branch,
-					BranchURL:   p.BranchURL,
-					PRURL:       p.PRURL,
-					ForkOwner:   p.ForkOwner,
-					CompletedBy: p.CompletedBy,
-					Evidence:    p.Evidence,
-				}
-			}
-			result[id] = items
-		}
-		c.mu.Lock()
-		c.cached = result
-		c.mu.Unlock()
+	c := &pendingUpstreamCache{
+		provider: provider,
+		upOrg:    upOrg,
+		upDB:     upDB,
+		interval: interval,
+		stop:     make(chan struct{}),
 	}
 
-	// First refresh is synchronous so the cache is populated before any reads.
-	refresh()
+	// Warm in the background so cache creation stays cheap; first readers coalesce
+	// on the same shared refresh if the warmup is still in flight.
+	c.scheduleRefresh(context.Background())
 
+	c.wg.Add(1)
 	go func() {
+		defer c.wg.Done()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				refresh()
+				c.scheduleRefresh(context.Background())
 			case <-c.stop:
 				return
 			}
@@ -103,10 +98,149 @@ func newPendingUpstreamCache(provider *remote.DoltHubProvider, upOrg, upDB strin
 	return c
 }
 
+func (c *pendingUpstreamCache) Stop() {
+	c.stopOnce.Do(func() {
+		c.mu.Lock()
+		close(c.stop)
+		c.mu.Unlock()
+	})
+	c.wg.Wait()
+}
+
 func (c *pendingUpstreamCache) Get() (map[string][]sdk.PendingItem, error) {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.cached, nil
+	cached := c.cached
+	stale := c.provider != nil && cached != nil && time.Since(c.refreshedAt) >= c.interval
+	refreshing := c.inflight != nil
+	c.mu.RUnlock()
+	if stale && !refreshing {
+		c.scheduleRefresh(context.Background())
+	}
+	return cached, nil
+}
+
+func (c *pendingUpstreamCache) GetContext(ctx context.Context) (map[string][]sdk.PendingItem, error) {
+	c.mu.RLock()
+	cached := c.cached
+	stale := c.provider != nil && (cached == nil || time.Since(c.refreshedAt) >= c.interval)
+	c.mu.RUnlock()
+	if !stale {
+		return cached, nil
+	}
+	// Request-scoped reads must not silently serve stale pending metadata. The
+	// outer API cache can decide whether to serve a stale full response on error.
+	return c.refreshSync(ctx)
+}
+
+func (c *pendingUpstreamCache) refreshSync(ctx context.Context) (map[string][]sdk.PendingItem, error) {
+	refresh := c.startRefresh(ctx)
+	select {
+	case <-refresh.done:
+		if refresh.err != nil {
+			return nil, refresh.err
+		}
+		return refresh.items, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (c *pendingUpstreamCache) scheduleRefresh(ctx context.Context) {
+	refresh := c.startRefresh(ctx)
+	go func() {
+		<-refresh.done
+		if refresh.err != nil {
+			slog.Warn("pending items refresh failed", "upstream", c.upOrg+"/"+c.upDB, "error", refresh.err)
+		}
+	}()
+}
+
+func (c *pendingUpstreamCache) refreshNow(ctx context.Context) (map[string][]sdk.PendingItem, error) {
+	if c.provider == nil {
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		return c.cached, nil
+	}
+	states, err := c.provider.WithContext(ctx).ListPendingWantedIDs(c.upOrg, c.upDB)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string][]sdk.PendingItem, len(states))
+	for id, pending := range states {
+		items := make([]sdk.PendingItem, len(pending))
+		for i, p := range pending {
+			items[i] = sdk.PendingItem{
+				RigHandle:   p.RigHandle,
+				Status:      p.Status,
+				ClaimedBy:   p.ClaimedBy,
+				Branch:      p.Branch,
+				BranchURL:   p.BranchURL,
+				PRURL:       p.PRURL,
+				ForkOwner:   p.ForkOwner,
+				CompletedBy: p.CompletedBy,
+				Evidence:    p.Evidence,
+			}
+		}
+		result[id] = items
+	}
+
+	c.mu.Lock()
+	c.cached = result
+	c.refreshedAt = time.Now()
+	c.mu.Unlock()
+	return result, nil
+}
+
+func (c *pendingUpstreamCache) startRefresh(ctx context.Context) *pendingRefresh {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.provider == nil {
+		refresh := &pendingRefresh{
+			done:  make(chan struct{}),
+			items: c.cached,
+		}
+		close(refresh.done)
+		return refresh
+	}
+	if c.inflight != nil {
+		return c.inflight
+	}
+	select {
+	case <-c.stop:
+		refresh := &pendingRefresh{
+			done:  make(chan struct{}),
+			items: c.cached,
+		}
+		close(refresh.done)
+		return refresh
+	default:
+	}
+
+	refresh := &pendingRefresh{done: make(chan struct{})}
+	c.inflight = refresh
+	c.wg.Add(1)
+	go c.runRefresh(ctx, refresh)
+	return refresh
+}
+
+func (c *pendingUpstreamCache) runRefresh(ctx context.Context, refresh *pendingRefresh) {
+	defer c.wg.Done()
+
+	sharedCtx, cancel := ctxutil.Detached(ctx, pendingRefreshTimeout)
+	defer cancel()
+
+	items, err := c.refreshNow(sharedCtx)
+
+	c.mu.Lock()
+	if c.inflight == refresh {
+		c.inflight = nil
+	}
+	c.mu.Unlock()
+
+	refresh.items = items
+	refresh.err = err
+	close(refresh.done)
 }
 
 // NewWorkspaceResolver creates a WorkspaceResolver.
@@ -116,6 +250,20 @@ func NewWorkspaceResolver(nango *NangoClient, sessions *SessionStore) *Workspace
 		sessions:     sessions,
 		cache:        make(map[string]*cachedWorkspace),
 		pendingCache: make(map[string]*pendingUpstreamCache),
+	}
+}
+
+// Stop shuts down any shared pending caches owned by the resolver.
+func (wr *WorkspaceResolver) Stop() {
+	wr.pendingMu.Lock()
+	caches := make([]*pendingUpstreamCache, 0, len(wr.pendingCache))
+	for _, cache := range wr.pendingCache {
+		caches = append(caches, cache)
+	}
+	wr.pendingMu.Unlock()
+
+	for _, cache := range caches {
+		cache.Stop()
 	}
 }
 
@@ -305,10 +453,11 @@ func (wr *WorkspaceResolver) buildClient(wl *WastelandConfig, rigHandle, connect
 	upstream := wl.Upstream
 
 	client := sdk.New(sdk.ClientConfig{
-		DB:        db,
-		RigHandle: rigHandle,
-		Upstream:  wl.Upstream,
-		Mode:      mode,
+		DB:                     db,
+		RigHandle:              rigHandle,
+		Upstream:               wl.Upstream,
+		Mode:                   mode,
+		BestEffortPendingReads: true,
 		LoadDiff: func(branch string) (string, error) {
 			return db.Diff(branch)
 		},
@@ -342,6 +491,13 @@ func (wr *WorkspaceResolver) buildClient(wl *WastelandConfig, rigHandle, connect
 			url, _ := provider.FindPR(upOrg, upDB, wl.ForkOrg, branch)
 			return url
 		},
+		CheckPRContext: func(ctx context.Context, branch string) string {
+			if provider == nil {
+				return ""
+			}
+			url, _ := provider.WithContext(ctx).FindPR(upOrg, upDB, wl.ForkOrg, branch)
+			return url
+		},
 		ClosePR: func(branch string) error {
 			_, prID := provider.FindPR(upOrg, upDB, wl.ForkOrg, branch)
 			if prID == "" {
@@ -357,8 +513,11 @@ func (wr *WorkspaceResolver) buildClient(wl *WastelandConfig, rigHandle, connect
 			return provider.ClosePR(upOrg, upDB, prID)
 		},
 		ListPendingItems: wr.getOrCreatePendingCache(provider, upOrg, upDB).Get,
-		BranchURL:        branchURL,
-		Signing:          wl.Signing,
+		ListPendingItemsContext: func(ctx context.Context) (map[string][]sdk.PendingItem, error) {
+			return wr.getOrCreatePendingCache(provider, upOrg, upDB).GetContext(ctx)
+		},
+		BranchURL: branchURL,
+		Signing:   wl.Signing,
 		SaveConfig: func(mode string, signing bool) error {
 			// Read-modify-write: fetch current metadata, update just this wasteland, write back.
 			_, currentMeta, err := wr.nango.GetConnection(connectionID)
@@ -383,12 +542,26 @@ func (wr *WorkspaceResolver) buildClient(wl *WastelandConfig, rigHandle, connect
 			forkDB := backend.NewRemoteDB(apiKey, upOrg, upDB, pending.ForkOwner, upDB, mode)
 			return commons.QueryWantedDetailAsOf(forkDB, wantedID, pending.Branch)
 		},
+		LoadPendingItemContext: func(ctx context.Context, wantedID string, pending sdk.PendingItem) (*commons.WantedItem, error) {
+			if pending.ForkOwner == "" || pending.Branch == "" {
+				return nil, fmt.Errorf("pending item %q is missing fork owner or branch", wantedID)
+			}
+			forkDB := backend.NewRemoteDB(apiKey, upOrg, upDB, pending.ForkOwner, upDB, mode)
+			return commons.QueryWantedDetailAsOf(forkDB.WithContext(ctx), wantedID, pending.Branch)
+		},
 		LoadPendingDetail: func(wantedID string, pending sdk.PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error) {
 			if pending.ForkOwner == "" || pending.Branch == "" {
 				return nil, nil, nil, fmt.Errorf("pending item %q is missing fork owner or branch", wantedID)
 			}
 			forkDB := backend.NewRemoteDB(apiKey, upOrg, upDB, pending.ForkOwner, upDB, mode)
 			return commons.QueryFullDetailAsOf(forkDB, wantedID, pending.Branch)
+		},
+		LoadPendingDetailContext: func(ctx context.Context, wantedID string, pending sdk.PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error) {
+			if pending.ForkOwner == "" || pending.Branch == "" {
+				return nil, nil, nil, fmt.Errorf("pending item %q is missing fork owner or branch", wantedID)
+			}
+			forkDB := backend.NewRemoteDB(apiKey, upOrg, upDB, pending.ForkOwner, upDB, mode)
+			return commons.QueryFullDetailAsOf(forkDB.WithContext(ctx), wantedID, pending.Branch)
 		},
 	})
 

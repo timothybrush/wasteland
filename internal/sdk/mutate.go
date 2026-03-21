@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -157,8 +158,8 @@ func (c *Client) mutatePRResult(wantedID, branch, mainStatus string) *MutationRe
 		detail.Actions = commons.AvailableTransitions(item, c.rigHandle)
 		detail.Delta = commons.ComputeDelta(mainStatus, item.Status, true)
 	}
-	if branch != "" && c.CheckPR != nil {
-		detail.PRURL = c.CheckPR(branch)
+	if branch != "" {
+		detail.PRURL = c.checkPRContext(context.Background(), branch)
 	}
 	if branch != "" && c.BranchURL != nil {
 		detail.BranchURL = c.BranchURL(branch)

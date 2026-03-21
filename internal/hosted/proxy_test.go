@@ -203,12 +203,8 @@ func TestNewNangoProxyClient_UsesDefaultDoltHubBase(t *testing.T) {
 	defer backend.Close()
 
 	client := NewNangoProxyClient(backend.URL, "nango-secret", "dolthub", "conn-99")
-	transport, ok := client.Transport.(*NangoProxyTransport)
-	if !ok {
-		t.Fatalf("Transport = %T, want *NangoProxyTransport", client.Transport)
-	}
-	if transport.dolthubBase() != "https://www.dolthub.com/api/v1alpha1" {
-		t.Fatalf("dolthubBase() = %q, want default", transport.dolthubBase())
+	if client.Transport == nil {
+		t.Fatal("expected instrumented transport")
 	}
 
 	req, _ := http.NewRequest("GET", "https://www.dolthub.com/api/v1alpha1/org/db/main", nil)

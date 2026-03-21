@@ -2,7 +2,9 @@ package remote
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gastownhall/wasteland/internal/observability"
 )
 
 // WantedIDPattern matches wanted IDs like w-com-001, w-gt-001, w-wl-004.
@@ -41,6 +45,7 @@ var validStatus = map[string]bool{
 type DoltHubProvider struct {
 	token      string
 	httpClient *http.Client // optional; if set, used instead of creating new clients
+	ctx        context.Context
 }
 
 // NewDoltHubProvider creates a DoltHubProvider with the given API token.
@@ -51,7 +56,14 @@ func NewDoltHubProvider(token string) *DoltHubProvider {
 // NewDoltHubProviderWithClient creates a DoltHubProvider using a pre-configured
 // HTTP client whose transport handles auth (e.g. Nango proxy).
 func NewDoltHubProviderWithClient(client *http.Client) *DoltHubProvider {
-	return &DoltHubProvider{httpClient: client}
+	return &DoltHubProvider{httpClient: observability.WrapClient(client)}
+}
+
+// WithContext returns a shallow copy that binds outbound HTTP calls to ctx.
+func (d *DoltHubProvider) WithContext(ctx context.Context) *DoltHubProvider {
+	clone := *d
+	clone.ctx = ctx
+	return &clone
 }
 
 // getClient returns the injected HTTP client if set, otherwise creates a new
@@ -60,7 +72,14 @@ func (d *DoltHubProvider) getClient(timeout time.Duration) *http.Client {
 	if d.httpClient != nil {
 		return d.httpClient
 	}
-	return &http.Client{Timeout: timeout}
+	return observability.WrapClient(&http.Client{Timeout: timeout})
+}
+
+func (d *DoltHubProvider) requestContext() context.Context {
+	if d.ctx != nil {
+		return d.ctx
+	}
+	return context.Background()
 }
 
 // ForkRequiredError is returned when the user needs to manually fork on DoltHub.
@@ -113,7 +132,7 @@ func (d *DoltHubProvider) forkREST(fromOrg, fromDB, toOrg string) error {
 		return fmt.Errorf("marshaling REST fork request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", dolthubAPIBase+"/fork", bytes.NewReader(reqBody))
+	req, err := http.NewRequestWithContext(d.requestContext(), "POST", dolthubAPIBase+"/fork", bytes.NewReader(reqBody))
 	if err != nil {
 		return fmt.Errorf("creating REST fork request: %w", err)
 	}
@@ -172,10 +191,14 @@ func (d *DoltHubProvider) pollForkOperation(operationName, forkOrg, forkDB strin
 	deadline := time.Now().Add(2 * time.Minute)
 
 	for time.Now().Before(deadline) {
-		time.Sleep(backoff)
+		select {
+		case <-time.After(backoff):
+		case <-d.requestContext().Done():
+			return d.requestContext().Err()
+		}
 
 		url := fmt.Sprintf("%s/fork?operationName=%s", dolthubAPIBase, operationName)
-		req, err := http.NewRequest("GET", url, nil)
+		req, err := http.NewRequestWithContext(d.requestContext(), "GET", url, nil)
 		if err != nil {
 			return fmt.Errorf("creating fork poll request: %w", err)
 		}
@@ -263,7 +286,7 @@ func (d *DoltHubProvider) forkGraphQL(fromOrg, fromDB, toOrg, sessionToken strin
 		return fmt.Errorf("marshaling fork request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", dolthubGraphQLURL, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(d.requestContext(), "POST", dolthubGraphQLURL, bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("creating fork request: %w", err)
 	}
@@ -306,7 +329,7 @@ func (d *DoltHubProvider) forkGraphQL(fromOrg, fromDB, toOrg, sessionToken strin
 // REST API. Returns true if the API returns HTTP 200 for the main branch.
 func (d *DoltHubProvider) databaseExists(org, db string) bool {
 	url := fmt.Sprintf("%s/%s/%s/main", dolthubAPIBase, org, db)
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(d.requestContext(), "GET", url, nil)
 	if err != nil {
 		return false
 	}
@@ -351,7 +374,7 @@ func (d *DoltHubProvider) CreatePR(forkOrg, upstreamOrg, db, fromBranch, title, 
 		return "", fmt.Errorf("marshaling PR request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewReader(reqBody))
+	req, err := http.NewRequestWithContext(d.requestContext(), "POST", url, bytes.NewReader(reqBody))
 	if err != nil {
 		return "", fmt.Errorf("creating PR request: %w", err)
 	}
@@ -458,13 +481,21 @@ func (d *DoltHubProvider) FindPR(upstreamOrg, db, forkOrg, fromBranch string) (p
 func (d *DoltHubProvider) dolthubGet(rawURL string) ([]byte, error) {
 	const maxRetries = 2
 	var lastErr error
+	ctx := d.requestContext()
 	for attempt := range maxRetries {
 		if attempt > 0 {
-			time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+			select {
+			case <-time.After(time.Duration(attempt) * 500 * time.Millisecond):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		}
 		body, err := d.dolthubGetOnce(rawURL)
 		if err == nil {
 			return body, nil
+		}
+		if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
 		}
 		lastErr = err
 	}
@@ -472,7 +503,7 @@ func (d *DoltHubProvider) dolthubGet(rawURL string) ([]byte, error) {
 }
 
 func (d *DoltHubProvider) dolthubGetOnce(rawURL string) ([]byte, error) {
-	req, err := http.NewRequest("GET", rawURL, nil)
+	req, err := http.NewRequestWithContext(d.requestContext(), "GET", rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -507,7 +538,7 @@ func (d *DoltHubProvider) UpdatePR(upstreamOrg, db, prID, title, description str
 		return fmt.Errorf("marshaling PR update: %w", err)
 	}
 
-	req, err := http.NewRequest("PATCH", patchURL, bytes.NewReader(reqBody))
+	req, err := http.NewRequestWithContext(d.requestContext(), "PATCH", patchURL, bytes.NewReader(reqBody))
 	if err != nil {
 		return fmt.Errorf("creating PR update request: %w", err)
 	}
@@ -537,7 +568,7 @@ func (d *DoltHubProvider) ClosePR(upstreamOrg, db, prID string) error {
 		return fmt.Errorf("marshaling PR close: %w", err)
 	}
 
-	req, err := http.NewRequest("PATCH", patchURL, bytes.NewReader(reqBody))
+	req, err := http.NewRequestWithContext(d.requestContext(), "PATCH", patchURL, bytes.NewReader(reqBody))
 	if err != nil {
 		return fmt.Errorf("creating PR close request: %w", err)
 	}
@@ -599,7 +630,7 @@ func (d *DoltHubProvider) ListPendingWantedIDs(upstreamOrg, db string) (map[stri
 	const maxConcurrency = 10
 	type detailResult struct {
 		info prInfo
-		ok   bool
+		err  error
 	}
 	detailCh := make(chan detailResult, len(openPulls))
 	var detailWG sync.WaitGroup
@@ -614,6 +645,7 @@ func (d *DoltHubProvider) ListPendingWantedIDs(upstreamOrg, db string) (map[stri
 			detailURL := fmt.Sprintf("%s/%s/%s/pulls/%s", dolthubAPIBase, upstreamOrg, db, pullID)
 			detail, err := d.dolthubGet(detailURL)
 			if err != nil {
+				detailCh <- detailResult{err: fmt.Errorf("reading PR %s detail: %w", pullID, err)}
 				return
 			}
 			var prDetail struct {
@@ -622,6 +654,7 @@ func (d *DoltHubProvider) ListPendingWantedIDs(upstreamOrg, db string) (map[stri
 				Author          string `json:"author"`
 			}
 			if err := json.Unmarshal(detail, &prDetail); err != nil {
+				detailCh <- detailResult{err: fmt.Errorf("decoding PR %s detail: %w", pullID, err)}
 				return
 			}
 			detailCh <- detailResult{
@@ -631,7 +664,6 @@ func (d *DoltHubProvider) ListPendingWantedIDs(upstreamOrg, db string) (map[stri
 					fromBranchOwner: prDetail.FromBranchOwner,
 					author:          prDetail.Author,
 				},
-				ok: true,
 			}
 		}(pr.PullID)
 	}
@@ -641,9 +673,10 @@ func (d *DoltHubProvider) ListPendingWantedIDs(upstreamOrg, db string) (map[stri
 
 	var prs []prInfo
 	for r := range detailCh {
-		if r.ok {
-			prs = append(prs, r.info)
+		if r.err != nil {
+			return nil, r.err
 		}
+		prs = append(prs, r.info)
 	}
 
 	// For PRs from "main" (commits directly on the fork's main), dolt_diff
@@ -666,15 +699,18 @@ func (d *DoltHubProvider) ListPendingWantedIDs(upstreamOrg, db string) (map[stri
 		upstreamItems = make(map[string]wantedItem)
 		upstreamURL := fmt.Sprintf("%s/%s/%s/main?q=%s",
 			dolthubAPIBase, upstreamOrg, db, url.QueryEscape(snapshotQuery))
-		if body, err := d.dolthubGet(upstreamURL); err == nil {
-			var qr queryResponse
-			if json.Unmarshal(body, &qr) == nil {
-				for _, row := range qr.Rows {
-					upstreamItems[row["id"]] = wantedItem{
-						status:    row["status"],
-						claimedBy: row["claimed_by"],
-					}
-				}
+		body, err := d.dolthubGet(upstreamURL)
+		if err != nil {
+			return nil, fmt.Errorf("reading upstream snapshot: %w", err)
+		}
+		var qr queryResponse
+		if err := json.Unmarshal(body, &qr); err != nil {
+			return nil, fmt.Errorf("decoding upstream snapshot: %w", err)
+		}
+		for _, row := range qr.Rows {
+			upstreamItems[row["id"]] = wantedItem{
+				status:    row["status"],
+				claimedBy: row["claimed_by"],
 			}
 		}
 	}
@@ -690,7 +726,11 @@ func (d *DoltHubProvider) ListPendingWantedIDs(upstreamOrg, db string) (map[stri
 		author   string // PR author, for filtering inherited claims
 		isAdded  bool
 	}
-	diffCh := make(chan []pendingEntry, len(prs))
+	type diffResult struct {
+		entries []pendingEntry
+		err     error
+	}
+	diffCh := make(chan diffResult, len(prs))
 	var wg sync.WaitGroup
 	sem2 := make(chan struct{}, maxConcurrency)
 
@@ -722,12 +762,12 @@ func (d *DoltHubProvider) ListPendingWantedIDs(upstreamOrg, db string) (map[stri
 					dolthubAPIBase, owner, db, url.QueryEscape(snapshotQuery))
 				body, err := d.dolthubGet(forkURL)
 				if err != nil {
-					diffCh <- nil
+					diffCh <- diffResult{err: fmt.Errorf("reading fork snapshot for PR %s: %w", pr.pullID, err)}
 					return
 				}
 				var qr queryResponse
 				if err := json.Unmarshal(body, &qr); err != nil {
-					diffCh <- nil
+					diffCh <- diffResult{err: fmt.Errorf("decoding fork snapshot for PR %s: %w", pr.pullID, err)}
 					return
 				}
 				var entries []pendingEntry
@@ -757,7 +797,7 @@ func (d *DoltHubProvider) ListPendingWantedIDs(upstreamOrg, db string) (map[stri
 						})
 					}
 				}
-				diffCh <- entries
+				diffCh <- diffResult{entries: entries}
 				return
 			}
 
@@ -768,12 +808,12 @@ func (d *DoltHubProvider) ListPendingWantedIDs(upstreamOrg, db string) (map[stri
 
 			body, err := d.dolthubGet(forkURL)
 			if err != nil {
-				diffCh <- nil
+				diffCh <- diffResult{err: fmt.Errorf("reading fork diff for PR %s: %w", pr.pullID, err)}
 				return
 			}
 			var qr queryResponse
 			if err := json.Unmarshal(body, &qr); err != nil {
-				diffCh <- nil
+				diffCh <- diffResult{err: fmt.Errorf("decoding fork diff for PR %s: %w", pr.pullID, err)}
 				return
 			}
 
@@ -809,7 +849,7 @@ func (d *DoltHubProvider) ListPendingWantedIDs(upstreamOrg, db string) (map[stri
 					},
 				})
 			}
-			diffCh <- entries
+			diffCh <- diffResult{entries: entries}
 		}(pr)
 	}
 
@@ -817,8 +857,11 @@ func (d *DoltHubProvider) ListPendingWantedIDs(upstreamOrg, db string) (map[stri
 	close(diffCh)
 
 	ids := make(map[string][]PendingWantedState)
-	for entries := range diffCh {
-		for _, e := range entries {
+	for result := range diffCh {
+		if result.err != nil {
+			return nil, result.err
+		}
+		for _, e := range result.entries {
 			// Reject fork statuses not in our lifecycle table. Forks we
 			// don't control may use non-standard values — skip those.
 			if !validStatus[e.state.Status] {

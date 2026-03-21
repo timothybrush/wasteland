@@ -1,10 +1,13 @@
 package backend
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeFakeBackendDolt(t *testing.T, body string) (string, string, string) {
@@ -192,5 +195,41 @@ func TestInjectAsOfAndExtractTableName(t *testing.T) {
 	}
 	if got := injectAsOf("SELECT 1", "origin/main"); got != "SELECT 1" {
 		t.Fatalf("injectAsOf(no from) = %q, want unchanged query", got)
+	}
+}
+
+func TestLocalDB_WithContext_CancelsQuery(t *testing.T) {
+	dbDir, _, _ := writeFakeBackendDolt(t, `#!/bin/sh
+if [ "$1" = "sql" ]; then
+  exec sleep 5
+fi
+exit 0
+`)
+
+	db := NewLocalDB(dbDir, "pr")
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := db.WithContext(ctx).Query("SELECT id FROM wanted", "")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Query() error = %v, want context.DeadlineExceeded", err)
+	}
+}
+
+func TestLocalDB_WithContext_CancelsBranches(t *testing.T) {
+	dbDir, _, _ := writeFakeBackendDolt(t, `#!/bin/sh
+if [ "$1" = "sql" ]; then
+  exec sleep 5
+fi
+exit 0
+`)
+
+	db := NewLocalDB(dbDir, "pr")
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := db.WithContext(ctx).Branches("wl/")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Branches() error = %v, want context.DeadlineExceeded", err)
 	}
 }

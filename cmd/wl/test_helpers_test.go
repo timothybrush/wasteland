@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -227,9 +228,14 @@ func withPendingWantedStatesOverride(
 ) {
 	t.Helper()
 	old := listPendingWantedStates
+	oldContext := listPendingWantedStatesContext
 	listPendingWantedStates = fn
+	listPendingWantedStatesContext = func(_ context.Context, upstreamOrg, db, token string) (map[string][]remote.PendingWantedState, error) {
+		return fn(upstreamOrg, db, token)
+	}
 	t.Cleanup(func() {
 		listPendingWantedStates = old
+		listPendingWantedStatesContext = oldContext
 	})
 }
 

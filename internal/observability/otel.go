@@ -29,6 +29,12 @@ var (
 	newMetricExporter = func(ctx context.Context) (sdkmetric.Exporter, error) { return otlpmetrichttp.New(ctx) }
 )
 
+type wrappedTransport struct {
+	http.RoundTripper
+}
+
+func (*wrappedTransport) observabilityWrapped() {}
+
 // Config controls OTEL resource attributes for this process.
 type Config struct {
 	ServiceName      string
@@ -140,7 +146,20 @@ func NewTransport(base http.RoundTripper) http.RoundTripper {
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	return otelhttp.NewTransport(base)
+	if _, ok := base.(interface{ observabilityWrapped() }); ok {
+		return base
+	}
+	return &wrappedTransport{RoundTripper: otelhttp.NewTransport(base)}
+}
+
+// WrapClient returns an instrumented shallow copy of client.
+func WrapClient(client *http.Client) *http.Client {
+	if client == nil {
+		client = &http.Client{}
+	}
+	clone := *client
+	clone.Transport = NewTransport(client.Transport)
+	return &clone
 }
 
 // TraceIDs extracts the current trace/span IDs from context.

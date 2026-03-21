@@ -19,6 +19,7 @@ import (
 	"github.com/gastownhall/wasteland/internal/api"
 	"github.com/gastownhall/wasteland/internal/backend"
 	"github.com/gastownhall/wasteland/internal/commons"
+	"github.com/gastownhall/wasteland/internal/ctxutil"
 	"github.com/gastownhall/wasteland/internal/federation"
 	"github.com/gastownhall/wasteland/internal/hosted"
 	"github.com/gastownhall/wasteland/internal/observability"
@@ -29,12 +30,14 @@ import (
 	"github.com/getsentry/sentry-go"
 	sentryhttp "github.com/getsentry/sentry-go/http"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
 	hostedPublicUpstreamOrg = "wasteland"
 	hostedPublicUpstreamDB  = "wl-commons"
 	hostedPublicUpstream    = hostedPublicUpstreamOrg + "/" + hostedPublicUpstreamDB
+	pendingRefreshTimeout   = 30 * time.Second
 )
 
 var (
@@ -42,6 +45,9 @@ var (
 	queryScoreboardDumpData      = commons.QueryScoreboardDump
 	listPendingWantedStates      = func(upstreamOrg, db, token string) (map[string][]remote.PendingWantedState, error) {
 		return remote.NewDoltHubProvider(token).ListPendingWantedIDs(upstreamOrg, db)
+	}
+	listPendingWantedStatesContext = func(ctx context.Context, upstreamOrg, db, token string) (map[string][]remote.PendingWantedState, error) {
+		return remote.NewDoltHubProvider(token).WithContext(ctx).ListPendingWantedIDs(upstreamOrg, db)
 	}
 	newLocalWorkflowDB = func(localDir, mode string) localWorkflowDB {
 		return backend.NewLocalDB(localDir, mode)
@@ -248,12 +254,13 @@ func runServe(cmd *cobra.Command, stdout, stderr io.Writer) error {
 	}
 
 	client := sdk.New(sdk.ClientConfig{
-		DB:        db,
-		RigHandle: cfg.RigHandle,
-		Upstream:  cfg.Upstream,
-		Mode:      cfg.ResolveMode(),
-		Signing:   cfg.Signing,
-		HopURI:    cfg.HopURI,
+		DB:                     db,
+		RigHandle:              cfg.RigHandle,
+		Upstream:               cfg.Upstream,
+		Mode:                   cfg.ResolveMode(),
+		Signing:                cfg.Signing,
+		HopURI:                 cfg.HopURI,
+		BestEffortPendingReads: true,
 		SaveConfig: func(mode string, signing bool) error {
 			store := federation.NewConfigStore()
 			c, err := store.Load(cfg.Upstream)
@@ -274,14 +281,20 @@ func runServe(cmd *cobra.Command, stdout, stderr io.Writer) error {
 		CheckPR: func(branch string) string {
 			return checkPRForBranch(cfg, branch)
 		},
+		CheckPRContext: func(ctx context.Context, branch string) string {
+			return checkPRForBranchContext(ctx, cfg, branch)
+		},
 		ClosePR: func(branch string) error {
 			return closePRForBranch(cfg, branch)
 		},
-		LoadPendingItem:   pendingItemLoaderCallback(cfg),
-		LoadPendingDetail: pendingDetailLoaderCallback(cfg),
-		ListPendingItems:  listPendingItemsFromPRs(cfg),
-		BranchURL:         branchURLCallback(cfg),
-		CloseUpstreamPR:   closeUpstreamPRCallback(cfg),
+		LoadPendingItem:          pendingItemLoaderCallback(cfg),
+		LoadPendingItemContext:   pendingItemLoaderContextCallback(cfg),
+		LoadPendingDetail:        pendingDetailLoaderCallback(cfg),
+		LoadPendingDetailContext: pendingDetailLoaderContextCallback(cfg),
+		ListPendingItems:         listPendingItemsFromPRs(cfg),
+		ListPendingItemsContext:  listPendingItemsFromPRsContext(cfg),
+		BranchURL:                branchURLCallback(cfg),
+		CloseUpstreamPR:          closeUpstreamPRCallback(cfg),
 	})
 
 	server := newSelfHostedAPIServer(client)
@@ -375,6 +388,7 @@ func runServeHosted(cmd *cobra.Command, stdout, _ io.Writer) error {
 	// Build session store and workspace resolver.
 	sessions := hosted.NewSessionStore()
 	resolver := hosted.NewWorkspaceResolver(nangoClient, sessions)
+	defer resolver.Stop()
 
 	// Build the API server with hosted workspace resolution.
 	apiServer := api.NewHostedWorkspace(hosted.NewClientFunc(), hosted.NewWorkspaceFunc())
@@ -399,16 +413,22 @@ func runServeHosted(cmd *cobra.Command, stdout, _ io.Writer) error {
 	defer hostedDumpCache.Stop()
 
 	// Anonymous client for unauthenticated public reads (browse, detail, etc.).
-	// Uses a background-refreshing cache so no user request blocks on DoltHub.
+	// Uses a background-refreshing cache with request-scoped cold-start refresh.
 	pendingCache := newPendingItemsCache(hostedPublicUpstreamOrg, hostedPublicUpstreamDB, 2*time.Minute)
 	defer pendingCache.Stop()
 	anonClient := sdk.New(sdk.ClientConfig{
-		DB:                publicDB,
-		Upstream:          hostedPublicUpstream,
-		Mode:              federation.ModePR,
-		LoadPendingItem:   pendingItemLoader(hostedPublicUpstreamOrg, hostedPublicUpstreamDB, federation.ModePR, ""),
-		LoadPendingDetail: pendingDetailLoader(hostedPublicUpstreamOrg, hostedPublicUpstreamDB, federation.ModePR, ""),
-		ListPendingItems:  pendingCache.Get,
+		DB:                       publicDB,
+		Upstream:                 hostedPublicUpstream,
+		Mode:                     federation.ModePR,
+		BestEffortPendingReads:   true,
+		LoadPendingItem:          pendingItemLoader(hostedPublicUpstreamOrg, hostedPublicUpstreamDB, federation.ModePR, ""),
+		LoadPendingItemContext:   pendingItemLoaderContext(hostedPublicUpstreamOrg, hostedPublicUpstreamDB, federation.ModePR, ""),
+		LoadPendingDetail:        pendingDetailLoader(hostedPublicUpstreamOrg, hostedPublicUpstreamDB, federation.ModePR, ""),
+		LoadPendingDetailContext: pendingDetailLoaderContext(hostedPublicUpstreamOrg, hostedPublicUpstreamDB, federation.ModePR, ""),
+		ListPendingItems:         pendingCache.Get,
+		ListPendingItemsContext: func(ctx context.Context) (map[string][]sdk.PendingItem, error) {
+			return pendingCache.GetContext(ctx)
+		},
 	})
 	apiServer.SetPublicClient(anonClient)
 
@@ -454,57 +474,49 @@ func newDumpRefresh(db commons.DB) func() ([]byte, error) {
 	}
 }
 
-// pendingItemsCache refreshes pending PR data in the background so user
-// requests never block on DoltHub API calls.
+// pendingItemsCache refreshes pending PR data in the background and can
+// synchronously refresh on cold/stale request-path reads.
 type pendingItemsCache struct {
-	mu     sync.RWMutex
-	cached map[string][]sdk.PendingItem
-	stop   chan struct{}
+	mu          sync.RWMutex
+	cached      map[string][]sdk.PendingItem
+	refreshedAt time.Time
+	upstreamOrg string
+	db          string
+	interval    time.Duration
+	refreshing  bool
+	group       singleflight.Group
+	stop        chan struct{}
+	stopOnce    sync.Once
+	wg          sync.WaitGroup
 }
 
 func newPendingItemsCache(upstreamOrg, db string, interval time.Duration) *pendingItemsCache {
-	c := &pendingItemsCache{stop: make(chan struct{})}
-
-	refresh := func() {
-		states, err := listPendingWantedStates(upstreamOrg, db, "")
-		if err != nil {
-			slog.Warn("pending items refresh failed", "error", err)
-			return
-		}
-		result := make(map[string][]sdk.PendingItem, len(states))
-		for id, pending := range states {
-			items := make([]sdk.PendingItem, len(pending))
-			for i, p := range pending {
-				items[i] = sdk.PendingItem{
-					RigHandle:   p.RigHandle,
-					Status:      p.Status,
-					ClaimedBy:   p.ClaimedBy,
-					Branch:      p.Branch,
-					BranchURL:   p.BranchURL,
-					PRURL:       p.PRURL,
-					ForkOwner:   p.ForkOwner,
-					CompletedBy: p.CompletedBy,
-					Evidence:    p.Evidence,
-				}
-			}
-			result[id] = items
-		}
-		c.mu.Lock()
-		c.cached = result
-		c.mu.Unlock()
+	c := &pendingItemsCache{
+		upstreamOrg: upstreamOrg,
+		db:          db,
+		interval:    interval,
+		stop:        make(chan struct{}),
 	}
 
 	// Pre-warm on startup.
-	go refresh()
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		if _, err := c.refreshSync(context.Background()); err != nil {
+			slog.Warn("pending items refresh failed", "error", err)
+		}
+	}()
 
 	// Background refresh loop.
+	c.wg.Add(1)
 	go func() {
+		defer c.wg.Done()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				refresh()
+				c.scheduleRefresh(context.Background())
 			case <-c.stop:
 				return
 			}
@@ -516,10 +528,119 @@ func newPendingItemsCache(upstreamOrg, db string, interval time.Duration) *pendi
 
 func (c *pendingItemsCache) Get() (map[string][]sdk.PendingItem, error) {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.cached, nil
+	cached := c.cached
+	stale := cached != nil && time.Since(c.refreshedAt) >= c.interval
+	refreshing := c.refreshing
+	c.mu.RUnlock()
+	if stale && !refreshing {
+		c.scheduleRefresh(context.Background())
+	}
+	return cached, nil
+}
+
+func (c *pendingItemsCache) GetContext(ctx context.Context) (map[string][]sdk.PendingItem, error) {
+	c.mu.RLock()
+	cached := c.cached
+	stale := cached == nil || time.Since(c.refreshedAt) >= c.interval
+	refreshing := c.refreshing
+	c.mu.RUnlock()
+	if !stale {
+		return cached, nil
+	}
+	if cached != nil {
+		if !refreshing {
+			c.scheduleRefresh(ctx)
+		}
+		return cached, nil
+	}
+	return c.refreshSync(ctx)
 }
 
 func (c *pendingItemsCache) Stop() {
-	close(c.stop)
+	c.stopOnce.Do(func() {
+		c.mu.Lock()
+		close(c.stop)
+		c.mu.Unlock()
+	})
+	c.wg.Wait()
+}
+
+func (c *pendingItemsCache) refreshSync(ctx context.Context) (map[string][]sdk.PendingItem, error) {
+	resultCh := c.group.DoChan("refresh", func() (any, error) {
+		sharedCtx, cancel := ctxutil.Detached(ctx, pendingRefreshTimeout)
+		defer cancel()
+		return c.refreshNow(sharedCtx)
+	})
+	select {
+	case result := <-resultCh:
+		if result.Err != nil {
+			return nil, result.Err
+		}
+		items, _ := result.Val.(map[string][]sdk.PendingItem)
+		return items, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (c *pendingItemsCache) scheduleRefresh(ctx context.Context) {
+	c.mu.Lock()
+	if c.refreshing {
+		c.mu.Unlock()
+		return
+	}
+	select {
+	case <-c.stop:
+		c.mu.Unlock()
+		return
+	default:
+	}
+	c.refreshing = true
+	c.wg.Add(1)
+	c.mu.Unlock()
+	go func() {
+		defer c.wg.Done()
+		bgCtx, cancel := ctxutil.Detached(ctx, pendingRefreshTimeout)
+		defer cancel()
+		defer func() {
+			c.mu.Lock()
+			c.refreshing = false
+			c.mu.Unlock()
+		}()
+		if _, err := c.refreshSync(bgCtx); err != nil {
+			slog.Warn("pending items refresh failed", "error", err)
+		}
+	}()
+}
+
+func (c *pendingItemsCache) refreshNow(ctx context.Context) (map[string][]sdk.PendingItem, error) {
+	states, err := listPendingWantedStatesContext(ctx, c.upstreamOrg, c.db, "")
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string][]sdk.PendingItem, len(states))
+	for id, pending := range states {
+		items := make([]sdk.PendingItem, len(pending))
+		for i, p := range pending {
+			items[i] = sdk.PendingItem{
+				RigHandle:   p.RigHandle,
+				Status:      p.Status,
+				ClaimedBy:   p.ClaimedBy,
+				Branch:      p.Branch,
+				BranchURL:   p.BranchURL,
+				PRURL:       p.PRURL,
+				ForkOwner:   p.ForkOwner,
+				CompletedBy: p.CompletedBy,
+				Evidence:    p.Evidence,
+			}
+		}
+		result[id] = items
+	}
+
+	c.mu.Lock()
+	c.cached = result
+	c.refreshedAt = time.Now()
+	c.mu.Unlock()
+	return result, nil
 }

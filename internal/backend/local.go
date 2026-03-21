@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 type LocalDB struct {
 	dir  string
 	mode string // "pr" or "wild-west"
+	ctx  context.Context
 }
 
 // NewLocalDB creates a DB backed by a local dolt database directory.
@@ -24,12 +26,19 @@ func NewLocalDB(dir, mode string) *LocalDB {
 // Dir returns the local database directory path.
 func (l *LocalDB) Dir() string { return l.dir }
 
+// WithContext returns a shallow copy that binds local read queries to ctx.
+func (l *LocalDB) WithContext(ctx context.Context) commons.DB {
+	clone := *l
+	clone.ctx = ctx
+	return &clone
+}
+
 // Query runs a read-only SQL SELECT, injecting AS OF for non-empty refs.
 func (l *LocalDB) Query(sql, ref string) (string, error) {
 	if ref != "" {
 		sql = injectAsOf(sql, ref)
 	}
-	return commons.DoltSQLQuery(l.dir, sql)
+	return commons.DoltSQLQueryContext(l.queryContext(), l.dir, sql)
 }
 
 // Exec runs DML on a branch (or main if branch is ""), then auto-commits.
@@ -65,7 +74,7 @@ func (l *LocalDB) Exec(branch, commitMsg string, signed bool, stmts ...string) e
 
 // Branches returns branch names matching the given prefix.
 func (l *LocalDB) Branches(prefix string) ([]string, error) {
-	return commons.ListBranches(l.dir, prefix)
+	return commons.ListBranchesContext(l.queryContext(), l.dir, prefix)
 }
 
 // DeleteBranch removes a local branch.
@@ -158,4 +167,11 @@ func extractTableName(s string) string {
 		name.WriteRune(ch)
 	}
 	return name.String()
+}
+
+func (l *LocalDB) queryContext() context.Context {
+	if l.ctx != nil {
+		return l.ctx
+	}
+	return context.Background()
 }

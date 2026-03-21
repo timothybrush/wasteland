@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -311,6 +312,92 @@ func TestDetail_UsesStaleCacheOnTransientError(t *testing.T) {
 	}
 	if stale.Item == nil || stale.Item.ID != "w-1" {
 		t.Fatalf("unexpected stale detail: %+v", stale.Item)
+	}
+}
+
+func TestDetail_UsesStaleCacheWhenPendingMetadataIncomplete(t *testing.T) {
+	db := newFakeDB()
+	db.items["w-1"] = &fakeItem{id: "w-1", title: "Fix bug", status: "open", postedBy: "alice", effortLevel: "small"}
+	var failPending atomic.Bool
+	client := sdk.New(sdk.ClientConfig{
+		DB:        db,
+		RigHandle: "alice",
+		Mode:      "wild-west",
+		ListPendingItemsContext: func(context.Context) (map[string][]sdk.PendingItem, error) {
+			if failPending.Load() {
+				return nil, errors.New("pending metadata incomplete")
+			}
+			return map[string][]sdk.PendingItem{
+				"w-1": {{
+					RigHandle: "bob",
+					Status:    "in_review",
+					Branch:    "wl/bob/w-1",
+				}},
+			}, nil
+		},
+		SaveConfig: func(_ string, _ bool) error { return nil },
+	})
+	srv := New(client)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	var warm DetailResponse
+	r := getJSON(t, ts, "/api/wanted/w-1", &warm)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("warm detail status = %d, want 200", r.StatusCode)
+	}
+
+	srv.detailCache.mu.Lock()
+	entry := srv.detailCache.entries["detail:local:alice:wild-west::w-1"]
+	if entry == nil {
+		srv.detailCache.mu.Unlock()
+		t.Fatal("expected warm detail cache entry")
+	}
+	entry.storedAt = time.Now().Add(-time.Minute)
+	srv.detailCache.mu.Unlock()
+
+	failPending.Store(true)
+
+	var stale DetailResponse
+	r = getJSON(t, ts, "/api/wanted/w-1", &stale)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("stale detail status = %d, want 200", r.StatusCode)
+	}
+	if got := r.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want %q", got, "no-store")
+	}
+	if stale.Item == nil || stale.Item.ID != "w-1" {
+		t.Fatalf("unexpected stale detail: %+v", stale.Item)
+	}
+}
+
+func TestHostedUncacheableBrowse_RetainsBestEffortPendingReads(t *testing.T) {
+	db := newFakeDB()
+	db.items["w-1"] = &fakeItem{id: "w-1", title: "Fix bug", status: "open", postedBy: "alice", effortLevel: "small"}
+	client := sdk.New(sdk.ClientConfig{
+		DB:                     db,
+		RigHandle:              "alice",
+		Upstream:               "hop/wl-commons",
+		Mode:                   "pr",
+		BestEffortPendingReads: true,
+		ListPendingItemsContext: func(context.Context) (map[string][]sdk.PendingItem, error) {
+			return nil, errors.New("pending metadata unavailable")
+		},
+		SaveConfig: func(_ string, _ bool) error { return nil },
+	})
+	srv := NewHostedWorkspace(func(*http.Request) (*sdk.Client, error) {
+		return client, nil
+	}, nil)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	var resp BrowseResponse
+	r := getJSON(t, ts, "/api/wanted", &resp)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", r.StatusCode)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].ID != "w-1" {
+		t.Fatalf("unexpected browse response: %+v", resp.Items)
 	}
 }
 

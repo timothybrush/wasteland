@@ -4,15 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/gastownhall/wasteland/internal/remote"
 	"github.com/gastownhall/wasteland/internal/sdk"
 )
+
+type resolverContextKey string
 
 func newFakeNangoForResolver(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -713,5 +718,375 @@ func TestPendingUpstreamCache_Get(t *testing.T) {
 	}
 	if len(got["w-1"]) != 1 || got["w-1"][0].RigHandle != "alice" {
 		t.Fatalf("Get() = %+v", got)
+	}
+}
+
+type pendingCacheResult struct {
+	items map[string][]sdk.PendingItem
+	err   error
+}
+
+func TestPendingUpstreamCache_GetContext_StaleCachedRefreshesBeforeReturningAndUsesRequestContext(t *testing.T) {
+	t.Parallel()
+
+	key := resolverContextKey("pending-stale-refresh")
+	ctxSeen := make(chan any, 1)
+	release := make(chan struct{})
+	var calls atomic.Int32
+
+	provider := remote.NewDoltHubProviderWithClient(&http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			select {
+			case ctxSeen <- req.Context().Value(key):
+			default:
+			}
+			switch req.URL.Path {
+			case "/api/v1alpha1/wasteland/wl-commons/pulls":
+				return jsonResponse(`{
+					"pulls":[
+						{"pull_id":"1","state":"open"}
+					]
+				}`), nil
+			case "/api/v1alpha1/wasteland/wl-commons/pulls/1":
+				return jsonResponse(`{
+					"from_branch":"wl/alice/w-1",
+					"from_branch_owner":"alice",
+					"author":"alice"
+				}`), nil
+			case "/api/v1alpha1/alice/wl-commons/wl/alice/w-1":
+				calls.Add(1)
+				<-release
+				return jsonResponse(`{
+					"rows":[
+						{"id":"w-1","status":"claimed","claimed_by":"alice","diff_type":"modified"}
+					]
+				}`), nil
+			default:
+				t.Fatalf("unexpected request path: %s", req.URL.Path)
+				return nil, nil
+			}
+		}),
+	})
+
+	cache := &pendingUpstreamCache{
+		cached: map[string][]sdk.PendingItem{
+			"w-1": {{RigHandle: "stale", Status: "claimed"}},
+		},
+		refreshedAt: time.Now().Add(-2 * time.Minute),
+		provider:    provider,
+		upOrg:       "wasteland",
+		upDB:        "wl-commons",
+		interval:    time.Minute,
+		stop:        make(chan struct{}),
+	}
+	defer cache.Stop()
+
+	resultCh := make(chan pendingCacheResult, 1)
+	go func() {
+		items, err := cache.GetContext(context.WithValue(context.Background(), key, "trace-bound"))
+		resultCh <- pendingCacheResult{items: items, err: err}
+	}()
+
+	for i := 0; i < 50 && calls.Load() == 0; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("refresh calls = %d, want 1", calls.Load())
+	}
+	select {
+	case got := <-ctxSeen:
+		if got != "trace-bound" {
+			t.Fatalf("refresh context value = %v, want trace-bound", got)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("stale refresh did not observe request context")
+	}
+	select {
+	case got := <-resultCh:
+		t.Fatalf("GetContext() returned early with %+v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	got := <-resultCh
+	if got.err != nil {
+		t.Fatalf("GetContext() error = %v", got.err)
+	}
+	if len(got.items["w-1"]) != 1 || got.items["w-1"][0].RigHandle != "alice" {
+		t.Fatalf("GetContext() = %+v, want refreshed alice entry", got.items)
+	}
+}
+
+func TestPendingUpstreamCache_GetContext_CanceledStaleCallerKeepsSharedRefreshAlive(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	var calls atomic.Int32
+
+	provider := remote.NewDoltHubProviderWithClient(&http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Path {
+			case "/api/v1alpha1/wasteland/wl-commons/pulls":
+				return jsonResponse(`{
+					"pulls":[
+						{"pull_id":"1","state":"open"}
+					]
+				}`), nil
+			case "/api/v1alpha1/wasteland/wl-commons/pulls/1":
+				return jsonResponse(`{
+					"from_branch":"wl/alice/w-1",
+					"from_branch_owner":"alice",
+					"author":"alice"
+				}`), nil
+			case "/api/v1alpha1/alice/wl-commons/wl/alice/w-1":
+				calls.Add(1)
+				<-release
+				return jsonResponse(`{
+					"rows":[
+						{"id":"w-1","status":"claimed","claimed_by":"alice","diff_type":"modified"}
+					]
+				}`), nil
+			default:
+				t.Fatalf("unexpected request path: %s", req.URL.Path)
+				return nil, nil
+			}
+		}),
+	})
+
+	cache := &pendingUpstreamCache{
+		cached: map[string][]sdk.PendingItem{
+			"w-1": {{RigHandle: "stale", Status: "claimed"}},
+		},
+		refreshedAt: time.Now().Add(-2 * time.Minute),
+		provider:    provider,
+		upOrg:       "wasteland",
+		upDB:        "wl-commons",
+		interval:    time.Minute,
+		stop:        make(chan struct{}),
+	}
+	defer cache.Stop()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	firstErrCh := make(chan error, 1)
+	go func() {
+		_, err := cache.GetContext(ctx)
+		firstErrCh <- err
+	}()
+
+	for i := 0; i < 50 && calls.Load() == 0; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("refresh calls = %d, want 1", calls.Load())
+	}
+
+	cancel()
+	select {
+	case err := <-firstErrCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("first GetContext() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled GetContext() did not return")
+	}
+
+	secondDone := make(chan pendingCacheResult, 1)
+	go func() {
+		items, err := cache.GetContext(context.Background())
+		secondDone <- pendingCacheResult{items: items, err: err}
+	}()
+	time.Sleep(50 * time.Millisecond)
+	if calls.Load() != 1 {
+		t.Fatalf("refresh calls after second GetContext() = %d, want 1", calls.Load())
+	}
+	select {
+	case got := <-secondDone:
+		t.Fatalf("second GetContext() returned before shared refresh completed: %+v", got)
+	default:
+	}
+
+	close(release)
+	got := <-secondDone
+	if got.err != nil {
+		t.Fatalf("second GetContext() error = %v", got.err)
+	}
+	if len(got.items["w-1"]) != 1 || got.items["w-1"][0].RigHandle != "alice" {
+		t.Fatalf("second GetContext() = %+v, want refreshed alice entry", got.items)
+	}
+}
+
+func TestNewPendingUpstreamCache_WarmupIsAsyncAndCoalescesFirstReaders(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	var calls atomic.Int32
+
+	provider := remote.NewDoltHubProviderWithClient(&http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Path {
+			case "/api/v1alpha1/wasteland/wl-commons/pulls":
+				return jsonResponse(`{
+					"pulls":[
+						{"pull_id":"1","state":"open"}
+					]
+				}`), nil
+			case "/api/v1alpha1/wasteland/wl-commons/pulls/1":
+				return jsonResponse(`{
+					"from_branch":"wl/alice/w-1",
+					"from_branch_owner":"alice",
+					"author":"alice"
+				}`), nil
+			case "/api/v1alpha1/alice/wl-commons/wl/alice/w-1":
+				calls.Add(1)
+				<-release
+				return jsonResponse(`{
+					"rows":[
+						{"id":"w-1","status":"claimed","claimed_by":"alice","diff_type":"modified"}
+					]
+				}`), nil
+			default:
+				t.Fatalf("unexpected request path: %s", req.URL.Path)
+				return nil, nil
+			}
+		}),
+	})
+
+	created := make(chan *pendingUpstreamCache, 1)
+	go func() {
+		created <- newPendingUpstreamCache(provider, "wasteland", "wl-commons", time.Minute)
+	}()
+
+	var cache *pendingUpstreamCache
+	select {
+	case cache = <-created:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("newPendingUpstreamCache blocked on initial warmup")
+	}
+	defer cache.Stop()
+
+	errCh := make(chan error, 2)
+	for range 2 {
+		go func() {
+			_, err := cache.GetContext(context.Background())
+			errCh <- err
+		}()
+	}
+
+	for i := 0; i < 50 && calls.Load() == 0; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("refresh calls = %d, want 1", calls.Load())
+	}
+
+	time.Sleep(25 * time.Millisecond)
+	if calls.Load() != 1 {
+		t.Fatalf("refresh calls before release = %d, want 1", calls.Load())
+	}
+
+	close(release)
+	for range 2 {
+		if err := <-errCh; err != nil {
+			t.Fatalf("GetContext() error = %v", err)
+		}
+	}
+}
+
+func TestPendingUpstreamCache_StopWaitsForInFlightRefresh(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	var calls atomic.Int32
+
+	provider := remote.NewDoltHubProviderWithClient(&http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Path {
+			case "/api/v1alpha1/wasteland/wl-commons/pulls":
+				return jsonResponse(`{
+					"pulls":[
+						{"pull_id":"1","state":"open"}
+					]
+				}`), nil
+			case "/api/v1alpha1/wasteland/wl-commons/pulls/1":
+				return jsonResponse(`{
+					"from_branch":"wl/alice/w-1",
+					"from_branch_owner":"alice",
+					"author":"alice"
+				}`), nil
+			case "/api/v1alpha1/alice/wl-commons/wl/alice/w-1":
+				calls.Add(1)
+				<-release
+				return jsonResponse(`{
+					"rows":[
+						{"id":"w-1","status":"claimed","claimed_by":"alice","diff_type":"modified"}
+					]
+				}`), nil
+			default:
+				t.Fatalf("unexpected request path: %s", req.URL.Path)
+				return nil, nil
+			}
+		}),
+	})
+
+	cache := &pendingUpstreamCache{
+		cached: map[string][]sdk.PendingItem{
+			"w-1": {{RigHandle: "stale", Status: "claimed"}},
+		},
+		refreshedAt: time.Now().Add(-2 * time.Minute),
+		provider:    provider,
+		upOrg:       "wasteland",
+		upDB:        "wl-commons",
+		interval:    time.Minute,
+		stop:        make(chan struct{}),
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := cache.GetContext(context.Background())
+		errCh <- err
+	}()
+
+	for i := 0; i < 50 && calls.Load() == 0; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("refresh calls = %d, want 1", calls.Load())
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		cache.Stop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+		t.Fatal("Stop() returned before in-flight refresh completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-errCh; err != nil {
+		t.Fatalf("GetContext() error = %v", err)
+	}
+
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop() did not wait for in-flight refresh")
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
+
+func jsonResponse(body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
 	}
 }

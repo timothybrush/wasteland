@@ -18,6 +18,15 @@ import (
 
 var apiTracer = otel.Tracer("github.com/gastownhall/wasteland/internal/api")
 
+var errPendingReadIncomplete = errors.New("pending read incomplete")
+
+func strictPendingReadContext(ctx context.Context, cacheable bool) context.Context {
+	if cacheable {
+		return sdk.WithStrictPendingReads(ctx)
+	}
+	return ctx
+}
+
 // resolveClient extracts the sdk.Client from the request. Returns false if
 // the client cannot be resolved (writes a 401 error to w in that case).
 // For GET requests, falls back to the anonymous public client if available.
@@ -63,7 +72,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	)
 	scope := s.readCacheScope(r, client)
 	fetch := func(ctx context.Context) ([]byte, error) {
-		result, err := client.BrowseContext(ctx, filter)
+		result, err := client.BrowseContext(strictPendingReadContext(ctx, scope.cacheable), filter)
 		if err != nil {
 			return nil, err
 		}
@@ -138,9 +147,12 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	scope := s.readCacheScope(r, client)
 	fetch := func(ctx context.Context) ([]byte, error) {
-		result, err := client.DetailContext(ctx, id)
+		result, err := client.DetailContext(strictPendingReadContext(ctx, scope.cacheable), id)
 		if err != nil {
 			return nil, err
+		}
+		if scope.cacheable && result.PendingReadIncomplete {
+			return nil, errPendingReadIncomplete
 		}
 		return json.Marshal(toDetailResponse(result, client.Mode()))
 	}
@@ -394,7 +406,7 @@ func isUpstreamAuthError(err error) bool {
 // DoltHub condition that doesn't warrant a Sentry alert (e.g. "no such
 // repository" when DoltHub temporarily can't resolve a repo).
 func isTransientUpstreamError(err error) bool {
-	return strings.Contains(err.Error(), "no such repository")
+	return strings.Contains(err.Error(), "no such repository") || errors.Is(err, errPendingReadIncomplete)
 }
 
 // isTokenPermissionError returns true if the error indicates the DoltHub API

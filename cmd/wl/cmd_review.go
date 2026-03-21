@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,11 +14,13 @@ import (
 
 	"github.com/gastownhall/wasteland/internal/backend"
 	"github.com/gastownhall/wasteland/internal/commons"
+	"github.com/gastownhall/wasteland/internal/ctxutil"
 	"github.com/gastownhall/wasteland/internal/federation"
 	"github.com/gastownhall/wasteland/internal/remote"
 	"github.com/gastownhall/wasteland/internal/sdk"
 	"github.com/gastownhall/wasteland/internal/style"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/singleflight"
 )
 
 type doltHubPRProvider interface {
@@ -25,6 +28,15 @@ type doltHubPRProvider interface {
 	FindPR(upstreamOrg, db, forkOrg, fromBranch string) (prURL, prID string)
 	UpdatePR(upstreamOrg, db, prID, title, description string) error
 	ClosePR(upstreamOrg, db, prID string) error
+}
+
+func bindDoltHubPRProviderContext(ctx context.Context, provider doltHubPRProvider) doltHubPRProvider {
+	if withCtx, ok := provider.(interface {
+		WithContext(context.Context) *remote.DoltHubProvider
+	}); ok {
+		return withCtx.WithContext(ctx)
+	}
+	return provider
 }
 
 var (
@@ -470,7 +482,11 @@ func createGitHubPR(client GitHubPRClient, upstreamRepo, forkOrg, forkDB, wlBran
 // findExistingPR checks for an open PR on upstream with the given head ref.
 // Returns the PR URL and number, or empty strings if none found.
 func findExistingPR(ghPath, upstreamRepo, head string) (url, number string) {
-	cmd := exec.Command(ghPath, "pr", "list", "--repo", upstreamRepo, "--head", head, "--state", "open", "--json", "number,url")
+	return findExistingPRContext(context.Background(), ghPath, upstreamRepo, head)
+}
+
+func findExistingPRContext(ctx context.Context, ghPath, upstreamRepo, head string) (url, number string) {
+	cmd := exec.CommandContext(ctx, ghPath, "pr", "list", "--repo", upstreamRepo, "--head", head, "--state", "open", "--json", "number,url")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", ""
@@ -761,15 +777,20 @@ func createPRForBranchRemote(cfg *federation.Config, cdb commons.DB, branch stri
 // checkPRForBranch checks if an upstream PR already exists for the given branch.
 // Returns the PR URL or empty string. Best-effort: returns "" on any error.
 func checkPRForBranch(cfg *federation.Config, branch string) string {
+	return checkPRForBranchContext(context.Background(), cfg, branch)
+}
+
+// checkPRForBranchContext checks if an upstream PR already exists for the given branch.
+// Returns the PR URL or empty string. Best-effort: returns "" on any error.
+func checkPRForBranchContext(ctx context.Context, cfg *federation.Config, branch string) string {
 	switch cfg.ResolveProviderType() {
 	case "github":
 		ghPath, err := exec.LookPath("gh")
 		if err != nil {
 			return ""
 		}
-		client := newGHClient(ghPath)
 		head := cfg.ForkOrg + ":" + branch
-		url, _ := client.FindPR(cfg.Upstream, head)
+		url, _ := findExistingPRContext(ctx, ghPath, cfg.Upstream, head)
 		return url
 	case "dolthub":
 		token := os.Getenv("DOLTHUB_TOKEN")
@@ -780,7 +801,7 @@ func checkPRForBranch(cfg *federation.Config, branch string) string {
 		if err != nil {
 			return ""
 		}
-		provider := newDoltHubPRProvider(token)
+		provider := bindDoltHubPRProviderContext(ctx, newDoltHubPRProvider(token))
 		url, _ := provider.FindPR(upstreamOrg, db, cfg.ForkOrg, branch)
 		return url
 	default:
@@ -839,6 +860,78 @@ func listPendingItemsFromPRs(cfg *federation.Config) func() (map[string][]sdk.Pe
 		return ghListPendingItems(ghPath, cfg.Upstream)
 	default:
 		return nil
+	}
+}
+
+// listPendingItemsFromPRsContext returns a callback that lists wanted IDs with open
+// upstream PRs using request-scoped context. Returns nil if the provider type
+// does not support PR listing.
+func listPendingItemsFromPRsContext(cfg *federation.Config) func(context.Context) (map[string][]sdk.PendingItem, error) {
+	switch cfg.ResolveProviderType() {
+	case "dolthub":
+		return dolthubListPendingItemsContext(cfg)
+	case "github":
+		ghPath, err := exec.LookPath("gh")
+		if err != nil {
+			return nil
+		}
+		return ghListPendingItemsContext(ghPath, cfg.Upstream)
+	default:
+		return nil
+	}
+}
+
+type pendingItemsFetcher func(context.Context) (map[string][]sdk.PendingItem, error)
+
+type pendingItemsTTLCache struct {
+	mu       sync.RWMutex
+	cached   map[string][]sdk.PendingItem
+	cachedAt time.Time
+	cacheTTL time.Duration
+	group    singleflight.Group
+	fetch    pendingItemsFetcher
+}
+
+func newPendingItemsTTLCache(cacheTTL time.Duration, fetch pendingItemsFetcher) func(context.Context) (map[string][]sdk.PendingItem, error) {
+	cache := &pendingItemsTTLCache{
+		cacheTTL: cacheTTL,
+		fetch:    fetch,
+	}
+	return cache.GetContext
+}
+
+func (c *pendingItemsTTLCache) GetContext(ctx context.Context) (map[string][]sdk.PendingItem, error) {
+	c.mu.RLock()
+	cached := c.cached
+	fresh := cached != nil && time.Since(c.cachedAt) < c.cacheTTL
+	c.mu.RUnlock()
+	if fresh {
+		return cached, nil
+	}
+
+	resultCh := c.group.DoChan("refresh", func() (any, error) {
+		sharedCtx, cancel := ctxutil.Detached(ctx, pendingRefreshTimeout)
+		defer cancel()
+		items, err := c.fetch(sharedCtx)
+		if err != nil {
+			return nil, err
+		}
+		c.mu.Lock()
+		c.cached = items
+		c.cachedAt = time.Now()
+		c.mu.Unlock()
+		return items, nil
+	})
+
+	select {
+	case result := <-resultCh:
+		if result.Err != nil {
+			return nil, result.Err
+		}
+		items, _ := result.Val.(map[string][]sdk.PendingItem)
+		return items, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
@@ -961,10 +1054,109 @@ func ghListPendingItems(ghPath, upstreamRepo string) func() (map[string][]sdk.Pe
 	}
 }
 
+func dolthubListPendingItemsContext(cfg *federation.Config) func(context.Context) (map[string][]sdk.PendingItem, error) {
+	token := commons.DoltHubToken()
+	if token == "" {
+		return nil
+	}
+	upstreamOrg, db, err := federation.ParseUpstream(cfg.Upstream)
+	if err != nil {
+		return nil
+	}
+	return newPendingItemsTTLCache(30*time.Second, func(ctx context.Context) (map[string][]sdk.PendingItem, error) {
+		states, err := remote.NewDoltHubProvider(token).WithContext(ctx).ListPendingWantedIDs(upstreamOrg, db)
+		if err != nil {
+			return nil, err
+		}
+		result := make(map[string][]sdk.PendingItem, len(states))
+		for id, pending := range states {
+			items := make([]sdk.PendingItem, len(pending))
+			for i, p := range pending {
+				items[i] = sdk.PendingItem{
+					RigHandle:   p.RigHandle,
+					Status:      p.Status,
+					ClaimedBy:   p.ClaimedBy,
+					Branch:      p.Branch,
+					BranchURL:   p.BranchURL,
+					PRURL:       p.PRURL,
+					ForkOwner:   p.ForkOwner,
+					CompletedBy: p.CompletedBy,
+					Evidence:    p.Evidence,
+				}
+			}
+			result[id] = items
+		}
+		return result, nil
+	})
+}
+
+func ghListPendingItemsContext(ghPath, upstreamRepo string) func(context.Context) (map[string][]sdk.PendingItem, error) {
+	return newPendingItemsTTLCache(30*time.Second, func(ctx context.Context) (map[string][]sdk.PendingItem, error) {
+		out, err := exec.CommandContext(ctx, ghPath, "api", "--paginate",
+			fmt.Sprintf("repos/%s/pulls?state=open&per_page=100", upstreamRepo),
+		).CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("listing GitHub PRs: %w", err)
+		}
+		var prs []struct {
+			Head struct {
+				Ref string `json:"ref"`
+			} `json:"head"`
+			Title string `json:"title"`
+			User  struct {
+				Login string `json:"login"`
+			} `json:"user"`
+		}
+		if err := json.Unmarshal(out, &prs); err != nil {
+			return nil, fmt.Errorf("parsing GitHub PRs: %w", err)
+		}
+		ids := make(map[string][]sdk.PendingItem)
+		for _, pr := range prs {
+			var rigHandle, wantedID string
+
+			parts := strings.SplitN(pr.Head.Ref, "/", 3)
+			if len(parts) == 3 && parts[0] == "wl" {
+				rigHandle = parts[1]
+				wantedID = parts[2]
+			}
+
+			if wantedID == "" {
+				if m := remote.WantedIDPattern.FindString(pr.Head.Ref); m != "" {
+					wantedID = m
+				} else if m := remote.WantedIDPattern.FindString(pr.Title); m != "" {
+					wantedID = m
+				}
+			}
+
+			if wantedID == "" {
+				continue
+			}
+			if rigHandle == "" {
+				rigHandle = pr.User.Login
+			}
+
+			ids[wantedID] = append(ids[wantedID], sdk.PendingItem{
+				RigHandle: rigHandle,
+			})
+		}
+		return ids, nil
+	})
+}
+
 // pendingItemLoaderCallback returns a callback that can read branch-only
 // pending item summaries from the correct DoltHub fork. Returns nil when the
 // current config does not support fork-aware remote reads.
 func pendingItemLoaderCallback(cfg *federation.Config) func(string, sdk.PendingItem) (*commons.WantedItem, error) {
+	callback := pendingItemLoaderContextCallback(cfg)
+	if callback == nil {
+		return nil
+	}
+	return func(wantedID string, pending sdk.PendingItem) (*commons.WantedItem, error) {
+		return callback(context.Background(), wantedID, pending)
+	}
+}
+
+func pendingItemLoaderContextCallback(cfg *federation.Config) func(context.Context, string, sdk.PendingItem) (*commons.WantedItem, error) {
 	if cfg.ResolveBackend() == federation.BackendLocal || cfg.ResolveProviderType() != "dolthub" {
 		return nil
 	}
@@ -974,16 +1166,23 @@ func pendingItemLoaderCallback(cfg *federation.Config) func(string, sdk.PendingI
 		return nil
 	}
 
-	return pendingItemLoader(upstreamOrg, db, cfg.ResolveMode(), commons.DoltHubToken())
+	return pendingItemLoaderContext(upstreamOrg, db, cfg.ResolveMode(), commons.DoltHubToken())
 }
 
 func pendingItemLoader(upstreamOrg, db, mode, token string) func(string, sdk.PendingItem) (*commons.WantedItem, error) {
+	callback := pendingItemLoaderContext(upstreamOrg, db, mode, token)
 	return func(wantedID string, pending sdk.PendingItem) (*commons.WantedItem, error) {
+		return callback(context.Background(), wantedID, pending)
+	}
+}
+
+func pendingItemLoaderContext(upstreamOrg, db, mode, token string) func(context.Context, string, sdk.PendingItem) (*commons.WantedItem, error) {
+	return func(ctx context.Context, wantedID string, pending sdk.PendingItem) (*commons.WantedItem, error) {
 		if pending.ForkOwner == "" || pending.Branch == "" {
 			return nil, fmt.Errorf("pending item %q is missing fork owner or branch", wantedID)
 		}
 		forkDB := backend.NewRemoteDB(token, upstreamOrg, db, pending.ForkOwner, db, mode)
-		return commons.QueryWantedDetailAsOf(forkDB, wantedID, pending.Branch)
+		return commons.QueryWantedDetailAsOf(forkDB.WithContext(ctx), wantedID, pending.Branch)
 	}
 }
 
@@ -991,6 +1190,16 @@ func pendingItemLoader(upstreamOrg, db, mode, token string) func(string, sdk.Pen
 // pending items from the correct DoltHub fork. Returns nil when the current
 // config does not support fork-aware remote reads.
 func pendingDetailLoaderCallback(cfg *federation.Config) func(string, sdk.PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error) {
+	callback := pendingDetailLoaderContextCallback(cfg)
+	if callback == nil {
+		return nil
+	}
+	return func(wantedID string, pending sdk.PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error) {
+		return callback(context.Background(), wantedID, pending)
+	}
+}
+
+func pendingDetailLoaderContextCallback(cfg *federation.Config) func(context.Context, string, sdk.PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error) {
 	if cfg.ResolveBackend() == federation.BackendLocal || cfg.ResolveProviderType() != "dolthub" {
 		return nil
 	}
@@ -1000,16 +1209,23 @@ func pendingDetailLoaderCallback(cfg *federation.Config) func(string, sdk.Pendin
 		return nil
 	}
 
-	return pendingDetailLoader(upstreamOrg, db, cfg.ResolveMode(), commons.DoltHubToken())
+	return pendingDetailLoaderContext(upstreamOrg, db, cfg.ResolveMode(), commons.DoltHubToken())
 }
 
 func pendingDetailLoader(upstreamOrg, db, mode, token string) func(string, sdk.PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error) {
+	callback := pendingDetailLoaderContext(upstreamOrg, db, mode, token)
 	return func(wantedID string, pending sdk.PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error) {
+		return callback(context.Background(), wantedID, pending)
+	}
+}
+
+func pendingDetailLoaderContext(upstreamOrg, db, mode, token string) func(context.Context, string, sdk.PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error) {
+	return func(ctx context.Context, wantedID string, pending sdk.PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error) {
 		if pending.ForkOwner == "" || pending.Branch == "" {
 			return nil, nil, nil, fmt.Errorf("pending item %q is missing fork owner or branch", wantedID)
 		}
 		forkDB := backend.NewRemoteDB(token, upstreamOrg, db, pending.ForkOwner, db, mode)
-		return commons.QueryFullDetailAsOf(forkDB, wantedID, pending.Branch)
+		return commons.QueryFullDetailAsOf(forkDB.WithContext(ctx), wantedID, pending.Branch)
 	}
 }
 

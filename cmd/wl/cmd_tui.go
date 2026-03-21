@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os/exec"
@@ -108,12 +109,13 @@ func runTUI(cmd *cobra.Command, _, stderr io.Writer) error {
 	}
 
 	client := sdk.New(sdk.ClientConfig{
-		DB:        db,
-		RigHandle: cfg.RigHandle,
-		Mode:      cfg.ResolveMode(),
-		Signing:   cfg.Signing,
-		HopURI:    cfg.HopURI,
-		LoadDiff:  loadDiff,
+		DB:                     db,
+		RigHandle:              cfg.RigHandle,
+		Mode:                   cfg.ResolveMode(),
+		Signing:                cfg.Signing,
+		HopURI:                 cfg.HopURI,
+		BestEffortPendingReads: true,
+		LoadDiff:               loadDiff,
 		CreatePR: func(branch string) (string, error) {
 			if cfg.ResolveBackend() != federation.BackendLocal {
 				return createPRForBranchRemote(cfg, db, branch)
@@ -122,6 +124,9 @@ func runTUI(cmd *cobra.Command, _, stderr io.Writer) error {
 		},
 		CheckPR: func(branch string) string {
 			return checkPRForBranch(cfg, branch)
+		},
+		CheckPRContext: func(ctx context.Context, branch string) string {
+			return checkPRForBranchContext(ctx, cfg, branch)
 		},
 		ClosePR: func(branch string) error {
 			return closePRForBranch(cfg, branch)
@@ -136,11 +141,14 @@ func runTUI(cmd *cobra.Command, _, stderr io.Writer) error {
 			c.Signing = signing
 			return store.Save(c)
 		},
-		LoadPendingItem:   pendingItemLoaderCallback(cfg),
-		LoadPendingDetail: pendingDetailLoaderCallback(cfg),
-		ListPendingItems:  listPendingItemsFromPRs(cfg),
-		BranchURL:         branchURLCallback(cfg),
-		CloseUpstreamPR:   closeUpstreamPRCallback(cfg),
+		LoadPendingItem:          pendingItemLoaderCallback(cfg),
+		LoadPendingItemContext:   pendingItemLoaderContextCallback(cfg),
+		LoadPendingDetail:        pendingDetailLoaderCallback(cfg),
+		LoadPendingDetailContext: pendingDetailLoaderContextCallback(cfg),
+		ListPendingItems:         listPendingItemsFromPRs(cfg),
+		ListPendingItemsContext:  listPendingItemsFromPRsContext(cfg),
+		BranchURL:                branchURLCallback(cfg),
+		CloseUpstreamPR:          closeUpstreamPRCallback(cfg),
 	})
 
 	m := newTUIModel(tui.Config{

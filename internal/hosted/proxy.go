@@ -3,6 +3,8 @@ package hosted
 import (
 	"net/http"
 	"strings"
+
+	"github.com/gastownhall/wasteland/internal/observability"
 )
 
 // NangoProxyTransport is an http.RoundTripper that rewrites DoltHub API
@@ -72,12 +74,12 @@ func (t *NangoProxyTransport) RoundTrip(req *http.Request) (*http.Response, erro
 // NewNangoProxyClient creates an *http.Client whose transport rewrites
 // DoltHub API calls through Nango's proxy.
 func NewNangoProxyClient(nangoBaseURL, secretKey, integrationID, connectionID string) *http.Client {
-	return &http.Client{
+	return observability.WrapClient(&http.Client{
 		Transport: &NangoProxyTransport{
 			Base:          nangoBaseURL,
 			SecretKey:     secretKey,
 			IntegrationID: integrationID,
 			ConnectionID:  connectionID,
 		},
-	}
+	})
 }

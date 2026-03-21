@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gastownhall/wasteland/internal/federation"
 )
@@ -110,6 +112,30 @@ func TestFindExistingPR_ErrorPaths(t *testing.T) {
 			t.Fatalf("url = %q number = %q", url, number)
 		}
 	})
+}
+
+func TestCheckPRForBranchContext_GitHubHonorsCancellation(t *testing.T) {
+	installFakeCommand(t, "gh", `#!/bin/sh
+set -eu
+exec sleep 5
+`)
+
+	cfg := &federation.Config{
+		Upstream:     "org/repo",
+		ForkOrg:      "alice",
+		ProviderType: "github",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	if got := checkPRForBranchContext(ctx, cfg, "wl/alice/w-1"); got != "" {
+		t.Fatalf("checkPRForBranchContext() = %q, want empty", got)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("checkPRForBranchContext() took %v after cancellation", elapsed)
+	}
 }
 
 func TestBranchURLCallback_NilCases(t *testing.T) {

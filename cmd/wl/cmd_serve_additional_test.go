@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +17,8 @@ import (
 	"github.com/gastownhall/wasteland/internal/sdk"
 	"github.com/spf13/cobra"
 )
+
+type testContextKey string
 
 func withServeGracefulOverrides(
 	t *testing.T,
@@ -91,6 +95,343 @@ func TestPendingItemsCache_GetAndStop(t *testing.T) {
 	case <-cache.stop:
 	default:
 		t.Fatal("stop channel was not closed")
+	}
+}
+
+func TestPendingItemsCache_GetContext_RefreshesOnMiss(t *testing.T) {
+	key := testContextKey("serve-pending-refresh-miss")
+	old := listPendingWantedStatesContext
+	listPendingWantedStatesContext = func(ctx context.Context, upstreamOrg, db, token string) (map[string][]remote.PendingWantedState, error) {
+		if upstreamOrg != "wasteland" || db != "wl-commons" || token != "" {
+			return nil, fmt.Errorf("unexpected refresh args: %q %q %q", upstreamOrg, db, token)
+		}
+		if got := ctx.Value(key); got != "trace-bound" {
+			return nil, fmt.Errorf("context value = %v, want trace-bound", got)
+		}
+		return map[string][]remote.PendingWantedState{
+			"w-9": {{RigHandle: "charlie", Status: "claimed"}},
+		}, nil
+	}
+	t.Cleanup(func() {
+		listPendingWantedStatesContext = old
+	})
+
+	cache := &pendingItemsCache{
+		upstreamOrg: "wasteland",
+		db:          "wl-commons",
+		interval:    time.Minute,
+		stop:        make(chan struct{}),
+	}
+	defer cache.Stop()
+
+	items, err := cache.GetContext(context.WithValue(context.Background(), key, "trace-bound"))
+	if err != nil {
+		t.Fatalf("GetContext() error = %v", err)
+	}
+	if len(items["w-9"]) != 1 || items["w-9"][0].RigHandle != "charlie" {
+		t.Fatalf("items = %+v", items)
+	}
+}
+
+func TestPendingItemsCache_GetContext_StaleCachedReturnsCachedAndDedupesRefresh(t *testing.T) {
+	var calls atomic.Int32
+	release := make(chan struct{})
+	key := testContextKey("serve-pending-stale")
+	ctxSeen := make(chan any, 1)
+	old := listPendingWantedStatesContext
+	listPendingWantedStatesContext = func(ctx context.Context, upstreamOrg, db, token string) (map[string][]remote.PendingWantedState, error) {
+		if upstreamOrg != "pending-test" || db != "wl-commons" {
+			return old(ctx, upstreamOrg, db, token)
+		}
+		select {
+		case ctxSeen <- ctx.Value(key):
+		default:
+		}
+		calls.Add(1)
+		<-release
+		return map[string][]remote.PendingWantedState{
+			"w-2": {{RigHandle: "fresh"}},
+		}, nil
+	}
+	t.Cleanup(func() {
+		listPendingWantedStatesContext = old
+	})
+
+	cache := &pendingItemsCache{
+		cached: map[string][]sdk.PendingItem{
+			"w-2": {{RigHandle: "stale"}},
+		},
+		refreshedAt: time.Now().Add(-2 * time.Minute),
+		upstreamOrg: "pending-test",
+		db:          "wl-commons",
+		interval:    time.Minute,
+		stop:        make(chan struct{}),
+	}
+	defer cache.Stop()
+
+	items, err := cache.GetContext(context.WithValue(context.Background(), key, "trace-bound"))
+	if err != nil {
+		t.Fatalf("GetContext() error = %v", err)
+	}
+	if got := items["w-2"][0].RigHandle; got != "stale" {
+		t.Fatalf("cached rig handle = %q, want stale", got)
+	}
+
+	for i := 0; i < 50 && calls.Load() == 0; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("refresh calls after first GetContext() = %d, want 1", calls.Load())
+	}
+	select {
+	case got := <-ctxSeen:
+		if got != "trace-bound" {
+			t.Fatalf("refresh context value = %v, want trace-bound", got)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("stale refresh did not observe request context")
+	}
+
+	items, err = cache.GetContext(context.Background())
+	if err != nil {
+		t.Fatalf("second GetContext() error = %v", err)
+	}
+	if got := items["w-2"][0].RigHandle; got != "stale" {
+		t.Fatalf("second cached rig handle = %q, want stale", got)
+	}
+	time.Sleep(25 * time.Millisecond)
+	if calls.Load() != 1 {
+		t.Fatalf("refresh calls after second GetContext() = %d, want 1", calls.Load())
+	}
+
+	close(release)
+	for i := 0; i < 50; i++ {
+		refreshed, err := cache.Get()
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
+		if len(refreshed["w-2"]) == 1 && refreshed["w-2"][0].RigHandle == "fresh" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("cache did not refresh: %+v", cache.cached)
+}
+
+func TestPendingItemsCache_GetContext_CanceledFirstCallerDoesNotPoisonSharedRefresh(t *testing.T) {
+	var calls atomic.Int32
+	release := make(chan struct{})
+	old := listPendingWantedStatesContext
+	listPendingWantedStatesContext = func(ctx context.Context, upstreamOrg, db, token string) (map[string][]remote.PendingWantedState, error) {
+		if upstreamOrg != "pending-cold" || db != "wl-commons" {
+			return old(ctx, upstreamOrg, db, token)
+		}
+		calls.Add(1)
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return map[string][]remote.PendingWantedState{
+			"w-3": {{RigHandle: "shared"}},
+		}, nil
+	}
+	t.Cleanup(func() {
+		listPendingWantedStatesContext = old
+	})
+
+	cache := &pendingItemsCache{
+		upstreamOrg: "pending-cold",
+		db:          "wl-commons",
+		interval:    time.Minute,
+		stop:        make(chan struct{}),
+	}
+	defer cache.Stop()
+
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	cancelFirst()
+
+	firstErrCh := make(chan error, 1)
+	go func() {
+		_, err := cache.GetContext(firstCtx)
+		firstErrCh <- err
+	}()
+
+	secondItemsCh := make(chan map[string][]sdk.PendingItem, 1)
+	secondErrCh := make(chan error, 1)
+	go func() {
+		items, err := cache.GetContext(context.Background())
+		if err != nil {
+			secondErrCh <- err
+			return
+		}
+		secondItemsCh <- items
+	}()
+
+	for i := 0; i < 50 && calls.Load() == 0; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("refresh calls = %d, want 1", calls.Load())
+	}
+
+	close(release)
+
+	if err := <-firstErrCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("first caller error = %v, want context.Canceled", err)
+	}
+	select {
+	case err := <-secondErrCh:
+		t.Fatalf("second caller error = %v", err)
+	case items := <-secondItemsCh:
+		if len(items["w-3"]) != 1 || items["w-3"][0].RigHandle != "shared" {
+			t.Fatalf("second caller items = %+v", items)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second caller did not receive refreshed items")
+	}
+}
+
+func TestPendingItemsCache_GetContext_CanceledStaleCallerKeepsRefreshingFlagUntilRefreshCompletes(t *testing.T) {
+	var calls atomic.Int32
+	release := make(chan struct{})
+	old := listPendingWantedStatesContext
+	listPendingWantedStatesContext = func(ctx context.Context, upstreamOrg, db, token string) (map[string][]remote.PendingWantedState, error) {
+		if upstreamOrg != "pending-stale-cancel" || db != "wl-commons" {
+			return old(ctx, upstreamOrg, db, token)
+		}
+		calls.Add(1)
+		<-release
+		return map[string][]remote.PendingWantedState{
+			"w-4": {{RigHandle: "fresh"}},
+		}, nil
+	}
+	t.Cleanup(func() {
+		listPendingWantedStatesContext = old
+	})
+
+	cache := &pendingItemsCache{
+		cached: map[string][]sdk.PendingItem{
+			"w-4": {{RigHandle: "stale"}},
+		},
+		refreshedAt: time.Now().Add(-2 * time.Minute),
+		upstreamOrg: "pending-stale-cancel",
+		db:          "wl-commons",
+		interval:    time.Minute,
+		stop:        make(chan struct{}),
+	}
+	defer cache.Stop()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	items, err := cache.GetContext(ctx)
+	if err != nil {
+		t.Fatalf("GetContext() error = %v", err)
+	}
+	if got := items["w-4"][0].RigHandle; got != "stale" {
+		t.Fatalf("cached rig handle = %q, want stale", got)
+	}
+	cancel()
+
+	for i := 0; i < 50 && calls.Load() == 0; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("refresh calls = %d, want 1", calls.Load())
+	}
+
+	time.Sleep(25 * time.Millisecond)
+	cache.mu.RLock()
+	refreshing := cache.refreshing
+	cache.mu.RUnlock()
+	if !refreshing {
+		t.Fatal("refreshing flag was cleared before the background refresh completed")
+	}
+
+	_, err = cache.GetContext(context.Background())
+	if err != nil {
+		t.Fatalf("second GetContext() error = %v", err)
+	}
+	time.Sleep(25 * time.Millisecond)
+	if calls.Load() != 1 {
+		t.Fatalf("refresh calls after second GetContext() = %d, want 1", calls.Load())
+	}
+
+	close(release)
+	for i := 0; i < 50; i++ {
+		refreshed, err := cache.Get()
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
+		if len(refreshed["w-4"]) == 1 && refreshed["w-4"][0].RigHandle == "fresh" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("cache did not refresh: %+v", cache.cached)
+}
+
+func TestPendingItemsCache_StopWaitsForInFlightRefresh(t *testing.T) {
+	var calls atomic.Int32
+	release := make(chan struct{})
+	old := listPendingWantedStatesContext
+	listPendingWantedStatesContext = func(ctx context.Context, upstreamOrg, db, token string) (map[string][]remote.PendingWantedState, error) {
+		if upstreamOrg != "pending-stop" || db != "wl-commons" {
+			return old(ctx, upstreamOrg, db, token)
+		}
+		calls.Add(1)
+		<-release
+		return map[string][]remote.PendingWantedState{
+			"w-5": {{RigHandle: "fresh"}},
+		}, nil
+	}
+	t.Cleanup(func() {
+		listPendingWantedStatesContext = old
+	})
+
+	cache := &pendingItemsCache{
+		cached: map[string][]sdk.PendingItem{
+			"w-5": {{RigHandle: "stale"}},
+		},
+		refreshedAt: time.Now().Add(-2 * time.Minute),
+		upstreamOrg: "pending-stop",
+		db:          "wl-commons",
+		interval:    time.Minute,
+		stop:        make(chan struct{}),
+	}
+
+	items, err := cache.GetContext(context.Background())
+	if err != nil {
+		t.Fatalf("GetContext() error = %v", err)
+	}
+	if got := items["w-5"][0].RigHandle; got != "stale" {
+		t.Fatalf("cached rig handle = %q, want stale", got)
+	}
+
+	for i := 0; i < 50 && calls.Load() == 0; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("refresh calls = %d, want 1", calls.Load())
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		cache.Stop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+		t.Fatal("Stop() returned before in-flight refresh completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop() did not wait for in-flight refresh")
 	}
 }
 

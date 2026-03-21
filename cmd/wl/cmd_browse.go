@@ -206,14 +206,18 @@ func runBrowseRemote(stdout, _ io.Writer, cfg *federation.Config, filter commons
 
 func newBrowseClientConfig(cfg *federation.Config, db commons.DB) sdk.ClientConfig {
 	clientCfg := sdk.ClientConfig{
-		DB:        db,
-		RigHandle: cfg.RigHandle,
-		Mode:      cfg.ResolveMode(),
+		DB:                     db,
+		RigHandle:              cfg.RigHandle,
+		Mode:                   cfg.ResolveMode(),
+		BestEffortPendingReads: true,
 	}
 	if cfg.ResolveMode() == federation.ModePR {
 		clientCfg.LoadPendingItem = pendingItemLoaderCallback(cfg)
+		clientCfg.LoadPendingItemContext = pendingItemLoaderContextCallback(cfg)
 		clientCfg.LoadPendingDetail = pendingDetailLoaderCallback(cfg)
+		clientCfg.LoadPendingDetailContext = pendingDetailLoaderContextCallback(cfg)
 		clientCfg.ListPendingItems = listPendingItemsFromPRs(cfg)
+		clientCfg.ListPendingItemsContext = listPendingItemsFromPRsContext(cfg)
 	}
 	return clientCfg
 }

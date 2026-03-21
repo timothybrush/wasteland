@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/gastownhall/wasteland/internal/commons"
@@ -30,6 +31,17 @@ var stateRank = map[string]int{
 
 var sdkTracer = otel.Tracer("github.com/gastownhall/wasteland/internal/sdk")
 
+type dbContextBinder interface {
+	WithContext(ctx context.Context) commons.DB
+}
+
+func bindDBContext(ctx context.Context, db commons.DB) commons.DB {
+	if binder, ok := db.(dbContextBinder); ok {
+		return binder.WithContext(ctx)
+	}
+	return db
+}
+
 // BrowseResult holds the items returned by Browse along with branch metadata.
 type BrowseResult struct {
 	Items           []commons.WantedSummary
@@ -52,6 +64,9 @@ type DetailResult struct {
 	// Computed by the SDK based on mode, branch state, delta, and existing PR.
 	BranchActions []string
 	UpstreamPRs   []PendingItem // pending upstream PRs for this item
+	// PendingReadIncomplete reports that the primary item was loaded, but the
+	// pending metadata fetch failed and the result was degraded.
+	PendingReadIncomplete bool
 }
 
 // Browse queries the wanted board with filters, applying branch overlays in PR mode.
@@ -76,8 +91,8 @@ func (c *Client) BrowseContext(ctx context.Context, filter commons.BrowseFilter)
 	))
 	defer span.End()
 
-	_, querySpan := sdkTracer.Start(ctx, "sdk.browse.branch_aware_query")
-	items, pendingIDs, err := commons.BrowseWantedBranchAware(c.db, c.mode, c.rigHandle, filter)
+	queryCtx, querySpan := sdkTracer.Start(ctx, "sdk.browse.branch_aware_query")
+	items, pendingIDs, err := commons.BrowseWantedBranchAware(bindDBContext(queryCtx, c.db), c.mode, c.rigHandle, filter)
 	if err != nil {
 		querySpan.RecordError(err)
 		querySpan.End()
@@ -89,20 +104,23 @@ func (c *Client) BrowseContext(ctx context.Context, filter commons.BrowseFilter)
 	// In non-upstream views, merge pending PR state if the callback is set.
 	var upstreamItems map[string][]PendingItem
 	var visiblePendingItems map[string][]PendingItem
-	if view != "upstream" && c.ListPendingItems != nil {
-		_, pendingSpan := sdkTracer.Start(ctx, "sdk.browse.list_pending_items")
-		upstreamItems, err = c.ListPendingItems()
+	if view != "upstream" && (c.ListPendingItems != nil || c.ListPendingItemsContext != nil) {
+		pendingCtx, pendingSpan := sdkTracer.Start(ctx, "sdk.browse.list_pending_items")
+		upstreamItems, err = c.listPendingItemsContext(pendingCtx)
 		if err != nil {
 			pendingSpan.RecordError(err)
+			pendingSpan.End()
+			if !c.allowBestEffortPendingRead(ctx, err) {
+				span.RecordError(err)
+				return nil, err
+			}
 		} else {
 			pendingSpan.SetAttributes(attribute.Int("wanted_ids", len(upstreamItems)))
-		}
-		pendingSpan.End()
-		if err == nil {
 			visiblePendingItems = upstreamItems
 			if view == "mine" {
 				visiblePendingItems = filterPendingItemsForRig(upstreamItems, c.rigHandle)
 			}
+			pendingSpan.End()
 		}
 	}
 
@@ -122,6 +140,7 @@ func (c *Client) BrowseContext(ctx context.Context, filter commons.BrowseFilter)
 	}
 
 	overlayCtx, overlaySpan := sdkTracer.Start(ctx, "sdk.browse.overlay_pending_branch_only")
+	defer overlaySpan.End()
 	for id, pending := range visiblePendingItems {
 		if seen[id] || len(pending) == 0 {
 			continue
@@ -133,7 +152,12 @@ func (c *Client) BrowseContext(ctx context.Context, filter commons.BrowseFilter)
 		}
 		item, err := c.loadPendingBrowseItemContext(overlayCtx, id, best)
 		if err != nil {
-			continue
+			overlaySpan.RecordError(err)
+			if c.allowBestEffortPendingRead(ctx, err) {
+				continue
+			}
+			span.RecordError(err)
+			return nil, err
 		}
 		if !matchesPendingBrowseFilter(item, best.Status, best.ClaimedBy, filter) {
 			continue
@@ -154,7 +178,6 @@ func (c *Client) BrowseContext(ctx context.Context, filter commons.BrowseFilter)
 		items = append(items, summary)
 	}
 	overlaySpan.SetAttributes(attribute.Int("branch_only_items", len(items)-len(seen)))
-	overlaySpan.End()
 
 	return &BrowseResult{Items: items, PendingIDs: pendingIDs, UpstreamPending: upstreamItems}, nil
 }
@@ -248,8 +271,8 @@ func (c *Client) DetailContext(ctx context.Context, wantedID string) (*DetailRes
 }
 
 func (c *Client) detailPRContext(ctx context.Context, wantedID string) (*DetailResult, error) {
-	_, resolveSpan := sdkTracer.Start(ctx, "sdk.detail.resolve_item_state")
-	state, err := commons.ResolveItemState(c.db, c.rigHandle, wantedID)
+	resolveCtx, resolveSpan := sdkTracer.Start(ctx, "sdk.detail.resolve_item_state")
+	state, err := commons.ResolveItemState(bindDBContext(resolveCtx, c.db), c.rigHandle, wantedID)
 	if err != nil {
 		resolveSpan.RecordError(err)
 	}
@@ -258,13 +281,29 @@ func (c *Client) detailPRContext(ctx context.Context, wantedID string) (*DetailR
 		return nil, err
 	}
 	effective := state.Effective()
+	pendingReadIncomplete := false
+	upstreamPRs, err := c.fetchUpstreamPRsContext(ctx, wantedID)
+	if err != nil {
+		trace.SpanFromContext(ctx).RecordError(err)
+		// Pending-only lookups must fail closed so branch-only items do not
+		// silently disappear behind incomplete pending state.
+		if effective == nil {
+			return nil, err
+		}
+		// Pending PR metadata is decorative once we already have an effective item.
+		if !c.allowBestEffortPendingRead(ctx, err) {
+			return nil, err
+		}
+		upstreamPRs = nil
+		pendingReadIncomplete = effective != nil
+	}
 	if effective == nil {
-		upstreamPRs := c.fetchUpstreamPRsContext(ctx, wantedID)
 		if len(upstreamPRs) > 0 {
 			result, err := c.detailFromPendingContext(ctx, wantedID, upstreamPRs)
 			if err == nil {
 				return result, nil
 			}
+			trace.SpanFromContext(ctx).RecordError(err)
 			return nil, err
 		}
 		// Fall back to main query if resolve found nothing.
@@ -272,51 +311,70 @@ func (c *Client) detailPRContext(ctx context.Context, wantedID string) (*DetailR
 	}
 
 	result := &DetailResult{
-		Item:       effective,
-		Completion: state.Completion,
-		Stamp:      state.Stamp,
-		Branch:     state.BranchName,
-		Delta:      state.Delta(),
-		Actions:    commons.AvailableTransitions(effective, c.rigHandle),
+		Item:                  effective,
+		Completion:            state.Completion,
+		Stamp:                 state.Stamp,
+		Branch:                state.BranchName,
+		Delta:                 state.Delta(),
+		Actions:               commons.AvailableTransitions(effective, c.rigHandle),
+		PendingReadIncomplete: pendingReadIncomplete,
 	}
 	if state.Main != nil {
 		result.MainStatus = state.Main.Status
 	}
-	if state.BranchName != "" && c.CheckPR != nil {
-		result.PRURL = c.CheckPR(state.BranchName)
+	if state.BranchName != "" {
+		result.PRURL = c.checkPRContext(ctx, state.BranchName)
 	}
 	if state.BranchName != "" && c.BranchURL != nil {
 		result.BranchURL = c.BranchURL(state.BranchName)
 	}
 	result.BranchActions = c.computeBranchActions(result)
-	result.UpstreamPRs = c.fetchUpstreamPRsContext(ctx, wantedID)
+	result.UpstreamPRs = upstreamPRs
 	return result, nil
 }
 
 func (c *Client) loadPendingBrowseItemContext(ctx context.Context, wantedID string, pending PendingItem) (*commons.WantedItem, error) {
-	_, span := sdkTracer.Start(ctx, "sdk.pending.load_item")
+	ctx, span := sdkTracer.Start(ctx, "sdk.pending.load_item")
 	defer span.End()
-	if c.LoadPendingItem != nil {
+	if c.LoadPendingItemContext != nil {
+		item, err := c.LoadPendingItemContext(ctx, wantedID, pending)
+		if err == nil {
+			return item, nil
+		}
+		span.RecordError(err)
+		if isContextError(err) {
+			return nil, err
+		}
+	} else if c.LoadPendingItem != nil {
 		item, err := c.LoadPendingItem(wantedID, pending)
 		if err == nil {
 			return item, nil
 		}
 		span.RecordError(err)
 	}
-	return commons.QueryWantedDetailAsOf(c.db, wantedID, pending.Branch)
+	return commons.QueryWantedDetailAsOf(bindDBContext(ctx, c.db), wantedID, pending.Branch)
 }
 
 func (c *Client) loadPendingDetailContext(ctx context.Context, wantedID string, pending PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error) {
-	_, span := sdkTracer.Start(ctx, "sdk.pending.load_detail")
+	ctx, span := sdkTracer.Start(ctx, "sdk.pending.load_detail")
 	defer span.End()
-	if c.LoadPendingDetail != nil {
+	if c.LoadPendingDetailContext != nil {
+		item, completion, stamp, err := c.LoadPendingDetailContext(ctx, wantedID, pending)
+		if err == nil {
+			return item, completion, stamp, nil
+		}
+		span.RecordError(err)
+		if isContextError(err) {
+			return nil, nil, nil, err
+		}
+	} else if c.LoadPendingDetail != nil {
 		item, completion, stamp, err := c.LoadPendingDetail(wantedID, pending)
 		if err == nil {
 			return item, completion, stamp, nil
 		}
 		span.RecordError(err)
 	}
-	return commons.QueryFullDetailAsOf(c.db, wantedID, pending.Branch)
+	return commons.QueryFullDetailAsOf(bindDBContext(ctx, c.db), wantedID, pending.Branch)
 }
 
 func (c *Client) detailFromPendingContext(ctx context.Context, wantedID string, pending []PendingItem) (*DetailResult, error) {
@@ -352,7 +410,7 @@ func (c *Client) detailWildWest(wantedID string) (*DetailResult, error) {
 func (c *Client) detailWildWestContext(ctx context.Context, wantedID string) (*DetailResult, error) {
 	ctx, span := sdkTracer.Start(ctx, "sdk.detail.query_full_detail")
 	defer span.End()
-	item, completion, stamp, err := commons.QueryFullDetail(c.db, wantedID)
+	item, completion, stamp, err := commons.QueryFullDetail(bindDBContext(ctx, c.db), wantedID)
 	if err != nil {
 		span.RecordError(err)
 		return nil, err
@@ -363,22 +421,31 @@ func (c *Client) detailWildWestContext(ctx context.Context, wantedID string) (*D
 		Stamp:      stamp,
 		Actions:    commons.AvailableTransitions(item, c.rigHandle),
 	}
-	result.UpstreamPRs = c.fetchUpstreamPRsContext(ctx, wantedID)
+	upstreamPRs, err := c.fetchUpstreamPRsContext(ctx, wantedID)
+	if err != nil {
+		span.RecordError(err)
+		// Once we have the full item from the primary DB, upstream PR metadata is
+		// non-essential decoration. Degrade to the resolved item instead of failing
+		// the entire detail view on a transient pending-state read error.
+		result.PendingReadIncomplete = true
+		return result, nil
+	}
+	result.UpstreamPRs = upstreamPRs
 	return result, nil
 }
 
-func (c *Client) fetchUpstreamPRsContext(ctx context.Context, wantedID string) []PendingItem {
-	if c.ListPendingItems == nil {
-		return nil
+func (c *Client) fetchUpstreamPRsContext(ctx context.Context, wantedID string) ([]PendingItem, error) {
+	if c.ListPendingItems == nil && c.ListPendingItemsContext == nil {
+		return nil, nil
 	}
-	_, span := sdkTracer.Start(ctx, "sdk.detail.list_pending_items")
+	ctx, span := sdkTracer.Start(ctx, "sdk.detail.list_pending_items")
 	defer span.End()
-	upstream, err := c.ListPendingItems()
+	upstream, err := c.listPendingItemsContext(ctx)
 	if err != nil {
 		span.RecordError(err)
-		return nil
+		return nil, err
 	}
-	return upstream[wantedID]
+	return upstream[wantedID], nil
 }
 
 // ComputeBranchActions returns the mode-aware branch operations available
@@ -430,11 +497,11 @@ func (c *Client) Dashboard() (*commons.DashboardData, error) {
 
 // DashboardContext fetches the personal dashboard with request tracing.
 func (c *Client) DashboardContext(ctx context.Context) (*commons.DashboardData, error) {
-	_, span := sdkTracer.Start(ctx, "sdk.dashboard", trace.WithAttributes(
+	ctx, span := sdkTracer.Start(ctx, "sdk.dashboard", trace.WithAttributes(
 		attribute.String("mode", c.mode),
 	))
 	defer span.End()
-	data, err := commons.QueryMyDashboardBranchAware(c.db, c.mode, c.rigHandle)
+	data, err := commons.QueryMyDashboardBranchAware(bindDBContext(ctx, c.db), c.mode, c.rigHandle)
 	if err != nil {
 		span.RecordError(err)
 	}
@@ -448,11 +515,39 @@ func (c *Client) Leaderboard(limit int) ([]commons.LeaderboardEntry, error) {
 
 // LeaderboardContext returns ranked rig stats with request tracing.
 func (c *Client) LeaderboardContext(ctx context.Context, limit int) ([]commons.LeaderboardEntry, error) {
-	_, span := sdkTracer.Start(ctx, "sdk.leaderboard")
+	ctx, span := sdkTracer.Start(ctx, "sdk.leaderboard")
 	defer span.End()
-	entries, err := commons.QueryLeaderboard(c.db, limit)
+	entries, err := commons.QueryLeaderboard(bindDBContext(ctx, c.db), limit)
 	if err != nil {
 		span.RecordError(err)
 	}
 	return entries, err
+}
+
+func isContextError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+func (c *Client) allowBestEffortPendingRead(ctx context.Context, err error) bool {
+	return c.bestEffortPendingReads && err != nil && !strictPendingReads(ctx)
+}
+
+func (c *Client) listPendingItemsContext(ctx context.Context) (map[string][]PendingItem, error) {
+	if c.ListPendingItemsContext != nil {
+		return c.ListPendingItemsContext(ctx)
+	}
+	if c.ListPendingItems != nil {
+		return c.ListPendingItems()
+	}
+	return nil, nil
+}
+
+func (c *Client) checkPRContext(ctx context.Context, branch string) string {
+	if c.CheckPRContext != nil {
+		return c.CheckPRContext(ctx, branch)
+	}
+	if c.CheckPR != nil {
+		return c.CheckPR(branch)
+	}
+	return ""
 }

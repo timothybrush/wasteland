@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 
 	"go.opentelemetry.io/otel"
@@ -58,6 +59,36 @@ func TestTraceIDs(t *testing.T) {
 	}
 	if gotSpanID != spanID.String() {
 		t.Fatalf("TraceIDs() span = %q, want %q", gotSpanID, spanID.String())
+	}
+}
+
+func TestNewTransport_IsIdempotent(t *testing.T) {
+	first := NewTransport(nil)
+	second := NewTransport(first)
+	if second != first {
+		t.Fatal("NewTransport() should not double-wrap an already instrumented transport")
+	}
+}
+
+type roundTripStub struct{}
+
+func (roundTripStub) RoundTrip(*http.Request) (*http.Response, error) { return nil, nil }
+
+func TestWrapClient_InstrumentsCloneWithoutMutatingInput(t *testing.T) {
+	baseTransport := roundTripStub{}
+	client := &http.Client{Transport: baseTransport}
+	wrapped := WrapClient(client)
+	if wrapped == client {
+		t.Fatal("WrapClient() should return a cloned client pointer")
+	}
+	if wrapped.Transport == nil {
+		t.Fatal("WrapClient() should install a transport")
+	}
+	if wrapped.Transport != NewTransport(wrapped.Transport) {
+		t.Fatal("WrapClient() transport should already be instrumented")
+	}
+	if client.Transport != baseTransport {
+		t.Fatal("WrapClient() should not mutate the input client transport")
 	}
 }
 

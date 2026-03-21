@@ -24,6 +24,29 @@ func doltRetry(fn func() error) error {
 	return err
 }
 
+func doltRetryContext(ctx context.Context, fn func(context.Context) error) error {
+	var err error
+	for i := 0; i < 3; i++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if i > 0 {
+			select {
+			case <-time.After(time.Duration(i) * time.Second):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		if err = fn(ctx); err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
+	return err
+}
+
 // DoltHubToken returns the DoltHub API token from the environment.
 func DoltHubToken() string {
 	return os.Getenv("DOLTHUB_TOKEN")
@@ -286,7 +309,13 @@ func PushBranch(dbDir, branch string, stdout io.Writer) error {
 
 // ListBranches returns branch names matching a prefix (e.g. "wl/").
 func ListBranches(dbDir, prefix string) ([]string, error) {
-	out, err := DoltSQLQuery(dbDir, fmt.Sprintf(
+	return ListBranchesContext(context.Background(), dbDir, prefix)
+}
+
+// ListBranchesContext returns branch names matching a prefix, binding the
+// underlying dolt query to ctx.
+func ListBranchesContext(ctx context.Context, dbDir, prefix string) ([]string, error) {
+	out, err := DoltSQLQueryContext(ctx, dbDir, fmt.Sprintf(
 		"SELECT name FROM dolt_branches WHERE name LIKE '%s%%' ORDER BY name",
 		EscapeLIKE(prefix),
 	))
@@ -550,14 +579,23 @@ func QueryItemStatusAsOf(db DB, wantedID, ref string) string {
 
 // DoltSQLQuery executes a SQL query and returns the raw CSV output.
 func DoltSQLQuery(dbDir, query string) (string, error) {
+	return DoltSQLQueryContext(context.Background(), dbDir, query)
+}
+
+// DoltSQLQueryContext executes a SQL query and returns the raw CSV output,
+// binding the dolt subprocess lifetime to ctx.
+func DoltSQLQueryContext(ctx context.Context, dbDir, query string) (string, error) {
 	var result string
-	err := doltRetry(func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	err := doltRetryContext(ctx, func(ctx context.Context) error {
+		queryCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "dolt", "sql", "-r", "csv", "-q", query)
+		cmd := exec.CommandContext(queryCtx, "dolt", "sql", "-r", "csv", "-q", query)
 		cmd.Dir = dbDir
 		output, err := cmd.CombinedOutput()
 		if err != nil {
+			if queryCtx.Err() != nil {
+				return queryCtx.Err()
+			}
 			return fmt.Errorf("dolt sql query failed: %w (%s)", err, strings.TrimSpace(string(output)))
 		}
 		result = string(output)

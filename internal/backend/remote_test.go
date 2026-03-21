@@ -1,13 +1,21 @@
 package backend
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+type contextKey string
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return fn(req) }
 
 func newTestServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, func()) {
 	t.Helper()
@@ -107,8 +115,14 @@ func TestNewRemoteDBWithClient_AndDeleteRemoteBranch(t *testing.T) {
 
 	client := srv.Client()
 	db := NewRemoteDBWithClient(client, "upstream-org", "wl-commons", "fork-org", "wl-commons", "pr")
-	if db.client != client {
-		t.Fatal("NewRemoteDBWithClient() should retain provided client")
+	if db.client == client {
+		t.Fatal("NewRemoteDBWithClient() should clone the provided client before instrumentation")
+	}
+	if db.client.Transport == nil {
+		t.Fatal("expected injected client transport to be instrumented")
+	}
+	if client.Transport == nil {
+		t.Fatal("expected original client transport to remain intact")
 	}
 	if db.token != "" {
 		t.Fatalf("token = %q, want empty when using external client", db.token)
@@ -116,6 +130,36 @@ func TestNewRemoteDBWithClient_AndDeleteRemoteBranch(t *testing.T) {
 
 	if err := db.DeleteRemoteBranch("wl/alice/w-001"); err != nil {
 		t.Fatalf("DeleteRemoteBranch() error = %v", err)
+	}
+}
+
+func TestNewRemoteDB_InstrumentsDefaultClient(t *testing.T) {
+	db := NewRemoteDB("token", "upstream-org", "wl-commons", "fork-org", "wl-commons", "pr")
+	if db.client == nil || db.client.Transport == nil {
+		t.Fatal("expected default remote DB client to be instrumented")
+	}
+}
+
+func TestRemoteDB_WithContext_BindsOutboundRequests(t *testing.T) {
+	t.Parallel()
+
+	key := contextKey("trace")
+	db := NewRemoteDB("token", "upstream-org", "wl-commons", "fork-org", "wl-commons", "pr")
+	db.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.Context().Value(key); got != "bound" {
+			t.Fatalf("request context value = %v, want bound", got)
+		}
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"query_execution_status":"Success","schema_fragment":[{"columnName":"id","columnType":"varchar(20)"}],"rows":[{"id":"w-1"}]}`)),
+		}
+		return resp, nil
+	})}
+
+	bound := db.WithContext(context.WithValue(context.Background(), key, "bound"))
+	if _, err := bound.Query("SELECT id FROM wanted", ""); err != nil {
+		t.Fatalf("Query() error = %v", err)
 	}
 }
 

@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/gastownhall/wasteland/internal/commons"
@@ -105,11 +106,11 @@ func (c *Client) AcceptUpstream(wantedID, submitterHandle string, input AcceptIn
 		return result, nil
 	}
 
-	if c.ListPendingItems == nil {
+	if c.ListPendingItems == nil && c.ListPendingItemsContext == nil {
 		return nil, fmt.Errorf("upstream PR listing not available")
 	}
 
-	pending, err := c.ListPendingItems()
+	pending, err := c.listPendingItemsContext(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("listing pending items: %w", err)
 	}
@@ -212,10 +213,10 @@ func (c *Client) CloseUpstream(wantedID, submitterHandle string) (*MutationResul
 
 // findUpstreamSubmission looks up a pending upstream submission by rig handle.
 func (c *Client) findUpstreamSubmission(wantedID, submitterHandle string) (*PendingItem, error) {
-	if c.ListPendingItems == nil {
+	if c.ListPendingItems == nil && c.ListPendingItemsContext == nil {
 		return nil, fmt.Errorf("upstream PR listing not available")
 	}
-	pending, err := c.ListPendingItems()
+	pending, err := c.listPendingItemsContext(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("listing pending items: %w", err)
 	}

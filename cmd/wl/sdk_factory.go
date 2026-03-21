@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+
 	"github.com/gastownhall/wasteland/internal/federation"
 	"github.com/gastownhall/wasteland/internal/sdk"
 )
@@ -13,13 +15,14 @@ var newSDKClient = func(cfg *federation.Config, noPush bool) (*sdk.Client, error
 		return nil, err
 	}
 	return sdk.New(sdk.ClientConfig{
-		DB:        db,
-		RigHandle: cfg.RigHandle,
-		Upstream:  cfg.Upstream,
-		Mode:      cfg.ResolveMode(),
-		Signing:   cfg.Signing,
-		HopURI:    cfg.HopURI,
-		NoPush:    noPush,
+		DB:                     db,
+		RigHandle:              cfg.RigHandle,
+		Upstream:               cfg.Upstream,
+		Mode:                   cfg.ResolveMode(),
+		Signing:                cfg.Signing,
+		HopURI:                 cfg.HopURI,
+		NoPush:                 noPush,
+		BestEffortPendingReads: true,
 		CreatePR: func(branch string) (string, error) {
 			if cfg.ResolveBackend() != federation.BackendLocal {
 				return createPRForBranchRemote(cfg, db, branch)
@@ -29,13 +32,19 @@ var newSDKClient = func(cfg *federation.Config, noPush bool) (*sdk.Client, error
 		CheckPR: func(branch string) string {
 			return checkPRForBranch(cfg, branch)
 		},
+		CheckPRContext: func(ctx context.Context, branch string) string {
+			return checkPRForBranchContext(ctx, cfg, branch)
+		},
 		ClosePR: func(branch string) error {
 			return closePRForBranch(cfg, branch)
 		},
-		LoadPendingItem:   pendingItemLoaderCallback(cfg),
-		LoadPendingDetail: pendingDetailLoaderCallback(cfg),
-		ListPendingItems:  listPendingItemsFromPRs(cfg),
-		BranchURL:         branchURLCallback(cfg),
-		CloseUpstreamPR:   closeUpstreamPRCallback(cfg),
+		LoadPendingItem:          pendingItemLoaderCallback(cfg),
+		LoadPendingItemContext:   pendingItemLoaderContextCallback(cfg),
+		LoadPendingDetail:        pendingDetailLoaderCallback(cfg),
+		LoadPendingDetailContext: pendingDetailLoaderContextCallback(cfg),
+		ListPendingItems:         listPendingItemsFromPRs(cfg),
+		ListPendingItemsContext:  listPendingItemsFromPRsContext(cfg),
+		BranchURL:                branchURLCallback(cfg),
+		CloseUpstreamPR:          closeUpstreamPRCallback(cfg),
 	}), nil
 }

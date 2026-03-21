@@ -2,6 +2,7 @@ package backend
 
 import (
 	"bytes"
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gastownhall/wasteland/internal/commons"
+	"github.com/gastownhall/wasteland/internal/observability"
 )
 
 // DoltHubAPIBase is the DoltHub REST API base URL. Var so tests can override.
@@ -29,6 +31,7 @@ type RemoteDB struct {
 	writeDB    string // fork db name
 	mode       string // "pr" or "wild-west"
 	client     *http.Client
+	ctx        context.Context
 }
 
 // NewRemoteDB creates a DB backed by the DoltHub REST API.
@@ -40,7 +43,7 @@ func NewRemoteDB(token, readOwner, readDB, writeOwner, writeDB, mode string) *Re
 		writeOwner: writeOwner,
 		writeDB:    writeDB,
 		mode:       mode,
-		client:     &http.Client{Timeout: 60 * time.Second},
+		client:     observability.WrapClient(&http.Client{Timeout: 60 * time.Second}),
 	}
 }
 
@@ -54,8 +57,15 @@ func NewRemoteDBWithClient(client *http.Client, readOwner, readDB, writeOwner, w
 		writeOwner: writeOwner,
 		writeDB:    writeDB,
 		mode:       mode,
-		client:     client,
+		client:     observability.WrapClient(client),
 	}
+}
+
+// WithContext returns a shallow copy that binds outbound HTTP calls to ctx.
+func (r *RemoteDB) WithContext(ctx context.Context) commons.DB {
+	clone := *r
+	clone.ctx = ctx
+	return &clone
 }
 
 // Query runs a read-only SQL SELECT via the DoltHub API.
@@ -437,7 +447,7 @@ func (r *RemoteDB) branchExists(branch string) bool {
 // --- HTTP helpers ---
 
 func (r *RemoteDB) doGet(apiURL string) ([]byte, error) {
-	req, err := http.NewRequest("GET", apiURL, nil)
+	req, err := http.NewRequestWithContext(r.requestContext(), "GET", apiURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -468,7 +478,7 @@ func (r *RemoteDB) doPost(apiURL string, payload []byte) ([]byte, error) {
 		bodyReader = bytes.NewReader(payload)
 	}
 
-	req, err := http.NewRequest("POST", apiURL, bodyReader)
+	req, err := http.NewRequestWithContext(r.requestContext(), "POST", apiURL, bodyReader)
 	if err != nil {
 		return nil, err
 	}
@@ -498,13 +508,18 @@ func (r *RemoteDB) doPost(apiURL string, payload []byte) ([]byte, error) {
 
 // pollOperation polls a DoltHub async write operation until it completes.
 func (r *RemoteDB) pollOperation(operationName string) error {
+	ctx := r.requestContext()
 	backoff := 500 * time.Millisecond
 	deadline := time.Now().Add(2 * time.Minute)
 	var lastErr error
 	consecutiveErrors := 0
 
 	for {
-		time.Sleep(backoff)
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 		if time.Now().After(deadline) {
 			break
 		}
@@ -577,6 +592,13 @@ func (r *RemoteDB) pollOperation(operationName string) error {
 		return fmt.Errorf("timed out waiting for write operation %q (last error: %w)", operationName, lastErr)
 	}
 	return fmt.Errorf("timed out waiting for write operation %q", operationName)
+}
+
+func (r *RemoteDB) requestContext() context.Context {
+	if r.ctx != nil {
+		return r.ctx
+	}
+	return context.Background()
 }
 
 func truncate(s string, n int) string {
