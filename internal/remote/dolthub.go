@@ -527,6 +527,13 @@ func (d *DoltHubProvider) dolthubGetOnce(rawURL string) ([]byte, error) {
 	return body, nil
 }
 
+func isNoSuchRepositoryError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "no such repository")
+}
+
 // UpdatePR updates the title and description of an existing DoltHub pull request.
 func (d *DoltHubProvider) UpdatePR(upstreamOrg, db, prID, title, description string) error {
 	patchURL := fmt.Sprintf("%s/%s/%s/pulls/%s", dolthubAPIBase, upstreamOrg, db, prID)
@@ -762,6 +769,10 @@ func (d *DoltHubProvider) ListPendingWantedIDs(upstreamOrg, db string) (map[stri
 					dolthubAPIBase, owner, db, url.QueryEscape(snapshotQuery))
 				body, err := d.dolthubGet(forkURL)
 				if err != nil {
+					if isNoSuchRepositoryError(err) {
+						diffCh <- diffResult{}
+						return
+					}
 					diffCh <- diffResult{err: fmt.Errorf("reading fork snapshot for PR %s: %w", pr.pullID, err)}
 					return
 				}
@@ -808,6 +819,10 @@ func (d *DoltHubProvider) ListPendingWantedIDs(upstreamOrg, db string) (map[stri
 
 			body, err := d.dolthubGet(forkURL)
 			if err != nil {
+				if isNoSuchRepositoryError(err) {
+					diffCh <- diffResult{}
+					return
+				}
 				diffCh <- diffResult{err: fmt.Errorf("reading fork diff for PR %s: %w", pr.pullID, err)}
 				return
 			}
