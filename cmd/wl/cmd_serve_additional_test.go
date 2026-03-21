@@ -60,6 +60,18 @@ func TestResolvePort_InvalidEnvFallsBackToFlag(t *testing.T) {
 	}
 }
 
+func TestHostedPublicUpstream_IsCanonical(t *testing.T) {
+	if hostedPublicUpstreamOrg != "wasteland" {
+		t.Fatalf("hostedPublicUpstreamOrg = %q", hostedPublicUpstreamOrg)
+	}
+	if hostedPublicUpstreamDB != "wl-commons" {
+		t.Fatalf("hostedPublicUpstreamDB = %q", hostedPublicUpstreamDB)
+	}
+	if hostedPublicUpstream != "wasteland/wl-commons" {
+		t.Fatalf("hostedPublicUpstream = %q", hostedPublicUpstream)
+	}
+}
+
 func TestPendingItemsCache_GetAndStop(t *testing.T) {
 	cache := &pendingItemsCache{
 		cached: map[string][]sdk.PendingItem{

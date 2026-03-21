@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gastownhall/wasteland/internal/api"
 	"github.com/gastownhall/wasteland/internal/sdk"
 )
 
@@ -140,6 +141,7 @@ func (s *Server) AuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		s.sessions.RememberActiveUpstream(sessionID, upstream)
+		r.Header.Set("X-Wasteland", upstream)
 
 		// Staging-only impersonation: X-Impersonate header overrides rig handle
 		// for read-only requests so operators can see the UI as another user.
@@ -156,6 +158,10 @@ func (s *Server) AuthMiddleware(next http.Handler) http.Handler {
 		ctx := r.Context()
 		ctx = context.WithValue(ctx, workspaceContextKey, workspace)
 		ctx = context.WithValue(ctx, clientContextKey, client)
+		ctx = api.WithResolvedReadIdentity(ctx, api.ResolvedReadIdentity{
+			Upstream: upstream,
+			Viewer:   workspace.RigHandle(),
+		})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

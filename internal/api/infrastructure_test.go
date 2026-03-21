@@ -211,7 +211,7 @@ func TestBrowse_UsesStaleCacheOnTransientError(t *testing.T) {
 	}
 
 	srv.browseCache.mu.Lock()
-	entry := srv.browseCache.entries["alice:"]
+	entry := srv.browseCache.entries["browse:local:alice:wild-west::"]
 	if entry == nil {
 		srv.browseCache.mu.Unlock()
 		t.Fatal("expected warm browse cache entry")
@@ -253,7 +253,7 @@ func TestBrowse_AuthErrorDoesNotServeStaleCache(t *testing.T) {
 	}
 
 	srv.browseCache.mu.Lock()
-	entry := srv.browseCache.entries["alice:"]
+	entry := srv.browseCache.entries["browse:local:alice:wild-west::"]
 	if entry == nil {
 		srv.browseCache.mu.Unlock()
 		t.Fatal("expected warm browse cache entry")
@@ -289,7 +289,7 @@ func TestDetail_UsesStaleCacheOnTransientError(t *testing.T) {
 	}
 
 	srv.detailCache.mu.Lock()
-	entry := srv.detailCache.entries["alice:w-1"]
+	entry := srv.detailCache.entries["detail:local:alice:wild-west::w-1"]
 	if entry == nil {
 		srv.detailCache.mu.Unlock()
 		t.Fatal("expected warm detail cache entry")
@@ -358,5 +358,566 @@ func TestWriteUpstreamError_ClassifiesErrors(t *testing.T) {
 				t.Fatalf("error = %q, want substring %q", resp.Error, tt.substr)
 			}
 		})
+	}
+}
+
+func TestBrowseCache_IsScopedByUpstream(t *testing.T) {
+	hopDB := newFakeDB()
+	hopDB.items["w-1"] = &fakeItem{id: "w-1", title: "Hop Item", status: "open", postedBy: "alice", effortLevel: "small"}
+	hopClient := sdk.New(sdk.ClientConfig{
+		DB:        hopDB,
+		RigHandle: "alice",
+		Upstream:  "hop/wl-commons",
+		Mode:      "wild-west",
+	})
+
+	gasDB := newFakeDB()
+	gasDB.items["w-1"] = &fakeItem{id: "w-1", title: "Gas Item", status: "open", postedBy: "alice", effortLevel: "small"}
+	gasClient := sdk.New(sdk.ClientConfig{
+		DB:        gasDB,
+		RigHandle: "alice",
+		Upstream:  "gastownhall/gascity",
+		Mode:      "wild-west",
+	})
+
+	srv := NewHostedWorkspace(func(r *http.Request) (*sdk.Client, error) {
+		switch r.Header.Get("X-Wasteland") {
+		case "hop/wl-commons":
+			return hopClient, nil
+		case "gastownhall/gascity":
+			return gasClient, nil
+		default:
+			return nil, errors.New("unknown upstream")
+		}
+	}, nil)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	reqA, err := http.NewRequest(http.MethodGet, ts.URL+"/api/wanted", nil)
+	if err != nil {
+		t.Fatalf("request A: %v", err)
+	}
+	reqA.Header.Set("X-Wasteland", "hop/wl-commons")
+	respA, err := http.DefaultClient.Do(reqA)
+	if err != nil {
+		t.Fatalf("GET hop browse: %v", err)
+	}
+	defer respA.Body.Close() //nolint:errcheck // test cleanup
+	var browseA BrowseResponse
+	if err := json.NewDecoder(respA.Body).Decode(&browseA); err != nil {
+		t.Fatalf("decode hop browse: %v", err)
+	}
+
+	reqB, err := http.NewRequest(http.MethodGet, ts.URL+"/api/wanted", nil)
+	if err != nil {
+		t.Fatalf("request B: %v", err)
+	}
+	reqB.Header.Set("X-Wasteland", "gastownhall/gascity")
+	respB, err := http.DefaultClient.Do(reqB)
+	if err != nil {
+		t.Fatalf("GET gas browse: %v", err)
+	}
+	defer respB.Body.Close() //nolint:errcheck // test cleanup
+	var browseB BrowseResponse
+	if err := json.NewDecoder(respB.Body).Decode(&browseB); err != nil {
+		t.Fatalf("decode gas browse: %v", err)
+	}
+
+	if len(browseA.Items) != 1 || browseA.Items[0].Title != "Hop Item" {
+		t.Fatalf("hop browse items = %+v", browseA.Items)
+	}
+	if len(browseB.Items) != 1 || browseB.Items[0].Title != "Gas Item" {
+		t.Fatalf("gas browse items = %+v", browseB.Items)
+	}
+}
+
+func TestDetailCache_IsScopedByUpstream(t *testing.T) {
+	hopDB := newFakeDB()
+	hopDB.items["w-1"] = &fakeItem{id: "w-1", title: "Hop Item", status: "open", postedBy: "alice", effortLevel: "small"}
+	hopClient := sdk.New(sdk.ClientConfig{
+		DB:        hopDB,
+		RigHandle: "alice",
+		Upstream:  "hop/wl-commons",
+		Mode:      "wild-west",
+	})
+
+	gasDB := newFakeDB()
+	gasDB.items["w-1"] = &fakeItem{id: "w-1", title: "Gas Item", status: "open", postedBy: "alice", effortLevel: "small"}
+	gasClient := sdk.New(sdk.ClientConfig{
+		DB:        gasDB,
+		RigHandle: "alice",
+		Upstream:  "gastownhall/gascity",
+		Mode:      "wild-west",
+	})
+
+	srv := NewHostedWorkspace(func(r *http.Request) (*sdk.Client, error) {
+		switch r.Header.Get("X-Wasteland") {
+		case "hop/wl-commons":
+			return hopClient, nil
+		case "gastownhall/gascity":
+			return gasClient, nil
+		default:
+			return nil, errors.New("unknown upstream")
+		}
+	}, nil)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	reqA, err := http.NewRequest(http.MethodGet, ts.URL+"/api/wanted/w-1", nil)
+	if err != nil {
+		t.Fatalf("request A: %v", err)
+	}
+	reqA.Header.Set("X-Wasteland", "hop/wl-commons")
+	respA, err := http.DefaultClient.Do(reqA)
+	if err != nil {
+		t.Fatalf("GET hop detail: %v", err)
+	}
+	defer respA.Body.Close() //nolint:errcheck // test cleanup
+	var detailA DetailResponse
+	if err := json.NewDecoder(respA.Body).Decode(&detailA); err != nil {
+		t.Fatalf("decode hop detail: %v", err)
+	}
+
+	reqB, err := http.NewRequest(http.MethodGet, ts.URL+"/api/wanted/w-1", nil)
+	if err != nil {
+		t.Fatalf("request B: %v", err)
+	}
+	reqB.Header.Set("X-Wasteland", "gastownhall/gascity")
+	respB, err := http.DefaultClient.Do(reqB)
+	if err != nil {
+		t.Fatalf("GET gas detail: %v", err)
+	}
+	defer respB.Body.Close() //nolint:errcheck // test cleanup
+	var detailB DetailResponse
+	if err := json.NewDecoder(respB.Body).Decode(&detailB); err != nil {
+		t.Fatalf("decode gas detail: %v", err)
+	}
+
+	if detailA.Item == nil || detailA.Item.Title != "Hop Item" {
+		t.Fatalf("hop detail = %+v", detailA.Item)
+	}
+	if detailB.Item == nil || detailB.Item.Title != "Gas Item" {
+		t.Fatalf("gas detail = %+v", detailB.Item)
+	}
+}
+
+func TestInvalidateReadCaches_TargetsOnlyMatchingUpstreamAndItem(t *testing.T) {
+	srv := NewHostedWorkspace(func(*http.Request) (*sdk.Client, error) {
+		return sdk.New(sdk.ClientConfig{
+			RigHandle: "alice",
+			Upstream:  "hop/wl-commons",
+			Mode:      "wild-west",
+		}), nil
+	}, nil)
+
+	srv.browseCache.entries = map[string]*cacheEntry{
+		"browse:wasteland%2Fwl-commons:user%3Aalice:wild-west::":          {data: []byte("hop"), storedAt: time.Now()},
+		"browse:gastownhall%2Fgascity:alice:wild-west::":                  {data: []byte("gas"), storedAt: time.Now()},
+		"browse:wasteland%2Fwl-commons:user%3Abob:wild-west::status=open": {data: []byte("bob"), storedAt: time.Now()},
+	}
+	srv.detailCache.entries = map[string]*cacheEntry{
+		"detail:wasteland%2Fwl-commons:user%3Aalice:wild-west::w-1": {data: []byte("hop-item"), storedAt: time.Now()},
+		"detail:wasteland%2Fwl-commons:user%3Aalice:wild-west::w-2": {data: []byte("hop-other"), storedAt: time.Now()},
+		"detail:gastownhall%2Fgascity:alice:wild-west::w-1":         {data: []byte("gas-item"), storedAt: time.Now()},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/wanted/w-1/claim", nil)
+	req = req.WithContext(WithResolvedReadIdentity(req.Context(), ResolvedReadIdentity{
+		Upstream: "hop/wl-commons",
+		Viewer:   "alice",
+	}))
+	client := sdk.New(sdk.ClientConfig{
+		RigHandle: "alice",
+		Upstream:  "hop/wl-commons",
+		Mode:      "wild-west",
+	})
+
+	srv.invalidateReadCaches(req, client, "w-1")
+
+	if got := srv.browseCache.Get("browse:wasteland%2Fwl-commons:user%3Aalice:wild-west::"); got != nil {
+		t.Fatalf("expected hop browse cache to be invalidated, got %q", got)
+	}
+	if got := srv.browseCache.Get("browse:wasteland%2Fwl-commons:user%3Abob:wild-west::status=open"); got != nil {
+		t.Fatalf("expected all hop browse cache entries to be invalidated, got %q", got)
+	}
+	if got := srv.browseCache.Get("browse:gastownhall%2Fgascity:alice:wild-west::"); got == nil {
+		t.Fatal("expected gas browse cache to remain")
+	}
+	if got := srv.detailCache.Get("detail:wasteland%2Fwl-commons:user%3Aalice:wild-west::w-1"); got != nil {
+		t.Fatalf("expected hop detail w-1 to be invalidated, got %q", got)
+	}
+	if got := srv.detailCache.Get("detail:wasteland%2Fwl-commons:user%3Aalice:wild-west::w-2"); got == nil {
+		t.Fatal("expected unrelated hop detail entry to remain")
+	}
+	if got := srv.detailCache.Get("detail:gastownhall%2Fgascity:alice:wild-west::w-1"); got == nil {
+		t.Fatal("expected gas detail entry to remain")
+	}
+}
+
+func TestInvalidateUpstreamReadCaches_TargetsOnlyMatchingUpstream(t *testing.T) {
+	srv := NewHostedWorkspace(func(*http.Request) (*sdk.Client, error) {
+		return sdk.New(sdk.ClientConfig{
+			RigHandle: "alice",
+			Upstream:  "hop/wl-commons",
+			Mode:      "wild-west",
+		}), nil
+	}, nil)
+
+	srv.browseCache.entries = map[string]*cacheEntry{
+		"browse:wasteland%2Fwl-commons:user%3Aalice:wild-west::": {data: []byte("hop"), storedAt: time.Now()},
+		"browse:gastownhall%2Fgascity:alice:wild-west::":         {data: []byte("gas"), storedAt: time.Now()},
+	}
+	srv.detailCache.entries = map[string]*cacheEntry{
+		"detail:wasteland%2Fwl-commons:user%3Aalice:wild-west::w-1": {data: []byte("hop-1"), storedAt: time.Now()},
+		"detail:wasteland%2Fwl-commons:user%3Abob:wild-west::w-2":   {data: []byte("hop-2"), storedAt: time.Now()},
+		"detail:gastownhall%2Fgascity:alice:wild-west::w-1":         {data: []byte("gas-1"), storedAt: time.Now()},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/branches/wl/alice/w-1/apply", nil)
+	req = req.WithContext(WithResolvedReadIdentity(req.Context(), ResolvedReadIdentity{
+		Upstream: "hop/wl-commons",
+		Viewer:   "alice",
+	}))
+	client := sdk.New(sdk.ClientConfig{
+		RigHandle: "alice",
+		Upstream:  "hop/wl-commons",
+		Mode:      "wild-west",
+	})
+
+	srv.invalidateUpstreamReadCaches(req, client)
+
+	if got := srv.browseCache.Get("browse:wasteland%2Fwl-commons:user%3Aalice:wild-west::"); got != nil {
+		t.Fatalf("expected hop browse cache to be invalidated, got %q", got)
+	}
+	if got := srv.detailCache.Get("detail:wasteland%2Fwl-commons:user%3Aalice:wild-west::w-1"); got != nil {
+		t.Fatalf("expected hop detail w-1 to be invalidated, got %q", got)
+	}
+	if got := srv.detailCache.Get("detail:wasteland%2Fwl-commons:user%3Abob:wild-west::w-2"); got != nil {
+		t.Fatalf("expected all hop detail cache entries to be invalidated, got %q", got)
+	}
+	if got := srv.browseCache.Get("browse:gastownhall%2Fgascity:alice:wild-west::"); got == nil {
+		t.Fatal("expected gas browse cache to remain")
+	}
+	if got := srv.detailCache.Get("detail:gastownhall%2Fgascity:alice:wild-west::w-1"); got == nil {
+		t.Fatal("expected gas detail cache to remain")
+	}
+}
+
+func TestInvalidateReadCaches_HostedWithoutCanonicalIdentityFallsBackToGlobalInvalidation(t *testing.T) {
+	srv := NewHostedWorkspace(func(*http.Request) (*sdk.Client, error) {
+		return sdk.New(sdk.ClientConfig{
+			RigHandle: "alice",
+			Upstream:  "hop/wl-commons",
+			Mode:      "wild-west",
+		}), nil
+	}, nil)
+
+	srv.browseCache.entries = map[string]*cacheEntry{
+		"browse:hop%2Fwl-commons:alice:wild-west::":      {data: []byte("hop"), storedAt: time.Now()},
+		"browse:gastownhall%2Fgascity:alice:wild-west::": {data: []byte("gas"), storedAt: time.Now()},
+	}
+	srv.detailCache.entries = map[string]*cacheEntry{
+		"detail:hop%2Fwl-commons:alice:wild-west::w-1":      {data: []byte("hop-1"), storedAt: time.Now()},
+		"detail:gastownhall%2Fgascity:alice:wild-west::w-1": {data: []byte("gas-1"), storedAt: time.Now()},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/wanted/w-1/claim", nil)
+	client := sdk.New(sdk.ClientConfig{
+		RigHandle: "alice",
+		Upstream:  "hop/wl-commons",
+		Mode:      "wild-west",
+	})
+
+	srv.invalidateReadCaches(req, client, "w-1")
+
+	if got := srv.browseCache.Get("browse:hop%2Fwl-commons:alice:wild-west::"); got != nil {
+		t.Fatalf("expected hosted browse cache to be cleared, got %q", got)
+	}
+	if got := srv.browseCache.Get("browse:gastownhall%2Fgascity:alice:wild-west::"); got != nil {
+		t.Fatalf("expected unrelated hosted browse cache to be cleared, got %q", got)
+	}
+	if got := srv.detailCache.Get("detail:hop%2Fwl-commons:alice:wild-west::w-1"); got != nil {
+		t.Fatalf("expected hosted detail cache to be cleared, got %q", got)
+	}
+	if got := srv.detailCache.Get("detail:gastownhall%2Fgascity:alice:wild-west::w-1"); got != nil {
+		t.Fatalf("expected unrelated hosted detail cache to be cleared, got %q", got)
+	}
+}
+
+func TestInvalidateBrowseReadCaches_HostedWithoutCanonicalIdentityFallsBackToGlobalInvalidation(t *testing.T) {
+	srv := NewHostedWorkspace(func(*http.Request) (*sdk.Client, error) {
+		return sdk.New(sdk.ClientConfig{
+			RigHandle: "alice",
+			Upstream:  "hop/wl-commons",
+			Mode:      "wild-west",
+		}), nil
+	}, nil)
+
+	srv.browseCache.entries = map[string]*cacheEntry{
+		"browse:hop%2Fwl-commons:alice:wild-west::":      {data: []byte("hop"), storedAt: time.Now()},
+		"browse:gastownhall%2Fgascity:alice:wild-west::": {data: []byte("gas"), storedAt: time.Now()},
+	}
+	srv.detailCache.entries = map[string]*cacheEntry{
+		"detail:hop%2Fwl-commons:alice:wild-west::w-1":      {data: []byte("hop-1"), storedAt: time.Now()},
+		"detail:gastownhall%2Fgascity:alice:wild-west::w-1": {data: []byte("gas-1"), storedAt: time.Now()},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/wanted", nil)
+	client := sdk.New(sdk.ClientConfig{
+		RigHandle: "alice",
+		Upstream:  "hop/wl-commons",
+		Mode:      "wild-west",
+	})
+
+	srv.invalidateBrowseReadCaches(req, client)
+
+	if got := srv.browseCache.Get("browse:hop%2Fwl-commons:alice:wild-west::"); got != nil {
+		t.Fatalf("expected hosted browse cache to be cleared, got %q", got)
+	}
+	if got := srv.browseCache.Get("browse:gastownhall%2Fgascity:alice:wild-west::"); got != nil {
+		t.Fatalf("expected unrelated hosted browse cache to be cleared, got %q", got)
+	}
+	if got := srv.detailCache.Get("detail:hop%2Fwl-commons:alice:wild-west::w-1"); got != nil {
+		t.Fatalf("expected hosted detail cache to be cleared by fail-closed invalidation, got %q", got)
+	}
+	if got := srv.detailCache.Get("detail:gastownhall%2Fgascity:alice:wild-west::w-1"); got != nil {
+		t.Fatalf("expected unrelated hosted detail cache to be cleared by fail-closed invalidation, got %q", got)
+	}
+}
+
+func TestInvalidateUpstreamReadCaches_HostedWithoutCanonicalIdentityFallsBackToGlobalInvalidation(t *testing.T) {
+	srv := NewHostedWorkspace(func(*http.Request) (*sdk.Client, error) {
+		return sdk.New(sdk.ClientConfig{
+			RigHandle: "alice",
+			Upstream:  "hop/wl-commons",
+			Mode:      "wild-west",
+		}), nil
+	}, nil)
+
+	srv.browseCache.entries = map[string]*cacheEntry{
+		"browse:hop%2Fwl-commons:alice:wild-west::":      {data: []byte("hop"), storedAt: time.Now()},
+		"browse:gastownhall%2Fgascity:alice:wild-west::": {data: []byte("gas"), storedAt: time.Now()},
+	}
+	srv.detailCache.entries = map[string]*cacheEntry{
+		"detail:hop%2Fwl-commons:alice:wild-west::w-1":      {data: []byte("hop-1"), storedAt: time.Now()},
+		"detail:gastownhall%2Fgascity:alice:wild-west::w-1": {data: []byte("gas-1"), storedAt: time.Now()},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/branches/wl/alice/w-1/apply", nil)
+	client := sdk.New(sdk.ClientConfig{
+		RigHandle: "alice",
+		Upstream:  "hop/wl-commons",
+		Mode:      "wild-west",
+	})
+
+	srv.invalidateUpstreamReadCaches(req, client)
+
+	if got := srv.browseCache.Get("browse:hop%2Fwl-commons:alice:wild-west::"); got != nil {
+		t.Fatalf("expected hosted browse cache to be cleared, got %q", got)
+	}
+	if got := srv.browseCache.Get("browse:gastownhall%2Fgascity:alice:wild-west::"); got != nil {
+		t.Fatalf("expected unrelated hosted browse cache to be cleared, got %q", got)
+	}
+	if got := srv.detailCache.Get("detail:hop%2Fwl-commons:alice:wild-west::w-1"); got != nil {
+		t.Fatalf("expected hosted detail cache to be cleared, got %q", got)
+	}
+	if got := srv.detailCache.Get("detail:gastownhall%2Fgascity:alice:wild-west::w-1"); got != nil {
+		t.Fatalf("expected unrelated hosted detail cache to be cleared, got %q", got)
+	}
+}
+
+func TestBrowseCacheKey_DistinguishesImpersonatedReads(t *testing.T) {
+	srv := NewHostedWorkspace(func(*http.Request) (*sdk.Client, error) {
+		return nil, nil
+	}, nil)
+	baseClient := sdk.New(sdk.ClientConfig{
+		RigHandle: "alice",
+		Upstream:  "hop/wl-commons",
+		Mode:      "wild-west",
+	})
+	baseReq := httptest.NewRequest(http.MethodGet, "/api/wanted", nil)
+	baseReq = baseReq.WithContext(WithResolvedReadIdentity(baseReq.Context(), ResolvedReadIdentity{
+		Upstream: "hop/wl-commons",
+		Viewer:   "alice",
+	}))
+
+	impReq := httptest.NewRequest(http.MethodGet, "/api/wanted", nil)
+	impReq.Header.Set("X-Impersonate", "bob")
+	impReq = impReq.WithContext(WithResolvedReadIdentity(impReq.Context(), ResolvedReadIdentity{
+		Upstream: "hop/wl-commons",
+		Viewer:   "alice",
+	}))
+	impClient := baseClient.WithRigHandle("bob")
+
+	baseKey := browseCacheKey(srv.readCacheScope(baseReq, baseClient), baseReq)
+	impKey := browseCacheKey(srv.readCacheScope(impReq, impClient), impReq)
+	if baseKey == impKey {
+		t.Fatalf("expected impersonated browse cache key to differ, got %q", baseKey)
+	}
+}
+
+func TestBrowseCacheKey_DistinguishesAnonymousPublicFromRealPublicHandle(t *testing.T) {
+	srv := NewHostedWorkspace(func(*http.Request) (*sdk.Client, error) {
+		return nil, nil
+	}, nil)
+
+	anonReq := httptest.NewRequest(http.MethodGet, "/api/wanted", nil)
+	anonReq = anonReq.WithContext(WithResolvedReadIdentity(anonReq.Context(), ResolvedReadIdentity{
+		Upstream: "wasteland/wl-commons",
+		Public:   true,
+	}))
+	anonClient := sdk.New(sdk.ClientConfig{
+		Upstream: "wasteland/wl-commons",
+		Mode:     "wild-west",
+	})
+
+	realReq := httptest.NewRequest(http.MethodGet, "/api/wanted", nil)
+	realReq = realReq.WithContext(WithResolvedReadIdentity(realReq.Context(), ResolvedReadIdentity{
+		Upstream: "wasteland/wl-commons",
+		Viewer:   "public",
+	}))
+	realClient := sdk.New(sdk.ClientConfig{
+		RigHandle: "public",
+		Upstream:  "wasteland/wl-commons",
+		Mode:      "wild-west",
+	})
+
+	anonKey := browseCacheKey(srv.readCacheScope(anonReq, anonClient), anonReq)
+	realKey := browseCacheKey(srv.readCacheScope(realReq, realClient), realReq)
+	if anonKey == realKey {
+		t.Fatalf("expected anonymous public cache key to differ from real public handle, got %q", anonKey)
+	}
+}
+
+func TestBrowseCacheKey_CanonicalizesLegacyHostedUpstreamAlias(t *testing.T) {
+	srv := NewHostedWorkspace(func(*http.Request) (*sdk.Client, error) {
+		return nil, nil
+	}, nil)
+
+	legacyReq := httptest.NewRequest(http.MethodGet, "/api/wanted", nil)
+	legacyReq = legacyReq.WithContext(WithResolvedReadIdentity(legacyReq.Context(), ResolvedReadIdentity{
+		Upstream: "hop/wl-commons",
+		Viewer:   "alice",
+	}))
+	legacyClient := sdk.New(sdk.ClientConfig{
+		RigHandle: "alice",
+		Upstream:  "hop/wl-commons",
+		Mode:      "wild-west",
+	})
+
+	canonicalReq := httptest.NewRequest(http.MethodGet, "/api/wanted", nil)
+	canonicalReq = canonicalReq.WithContext(WithResolvedReadIdentity(canonicalReq.Context(), ResolvedReadIdentity{
+		Upstream: "wasteland/wl-commons",
+		Viewer:   "alice",
+	}))
+	canonicalClient := sdk.New(sdk.ClientConfig{
+		RigHandle: "alice",
+		Upstream:  "wasteland/wl-commons",
+		Mode:      "wild-west",
+	})
+
+	legacyKey := browseCacheKey(srv.readCacheScope(legacyReq, legacyClient), legacyReq)
+	canonicalKey := browseCacheKey(srv.readCacheScope(canonicalReq, canonicalClient), canonicalReq)
+	if legacyKey != canonicalKey {
+		t.Fatalf("expected hosted legacy alias to canonicalize, got %q vs %q", legacyKey, canonicalKey)
+	}
+}
+
+func TestReadCacheScope_IgnoresRawUpstreamHeaderWithoutResolvedIdentity(t *testing.T) {
+	srv := NewHostedWorkspace(func(*http.Request) (*sdk.Client, error) {
+		return nil, nil
+	}, nil)
+	client := sdk.New(sdk.ClientConfig{
+		Mode: "pr",
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/wanted", nil)
+	req.Header.Set("X-Wasteland", "attacker/poison")
+
+	scope := srv.readCacheScope(req, client)
+	if scope.upstream != localCacheUpstream {
+		t.Fatalf("upstream = %q, want %q", scope.upstream, localCacheUpstream)
+	}
+}
+
+func TestReadCacheScope_HostedUntrustedClientDisablesCaching(t *testing.T) {
+	srv := NewHostedWorkspace(func(*http.Request) (*sdk.Client, error) {
+		return nil, nil
+	}, nil)
+	client := sdk.New(sdk.ClientConfig{
+		RigHandle: "alice",
+		Upstream:  "hop/wl-commons",
+		Mode:      "pr",
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/wanted", nil)
+
+	scope := srv.readCacheScope(req, client)
+	if scope.cacheable {
+		t.Fatal("expected hosted scope without resolved identity to bypass cache")
+	}
+	if scope.upstream != localCacheUpstream {
+		t.Fatalf("upstream = %q, want %q", scope.upstream, localCacheUpstream)
+	}
+	if scope.viewer != publicCacheViewer {
+		t.Fatalf("viewer = %q, want %q", scope.viewer, publicCacheViewer)
+	}
+}
+
+func TestReadCacheScope_HostedIncompleteResolvedIdentityDisablesCaching(t *testing.T) {
+	srv := NewHostedWorkspace(func(*http.Request) (*sdk.Client, error) {
+		return nil, nil
+	}, nil)
+	client := sdk.New(sdk.ClientConfig{
+		RigHandle: "alice",
+		Upstream:  "hop/wl-commons",
+		Mode:      "pr",
+	})
+
+	reqMissingUpstream := httptest.NewRequest(http.MethodGet, "/api/wanted", nil)
+	reqMissingUpstream = reqMissingUpstream.WithContext(WithResolvedReadIdentity(reqMissingUpstream.Context(), ResolvedReadIdentity{
+		Viewer: "alice",
+	}))
+	scope := srv.readCacheScope(reqMissingUpstream, client)
+	if scope.cacheable {
+		t.Fatal("expected hosted scope with missing upstream to bypass cache")
+	}
+
+	reqMissingViewer := httptest.NewRequest(http.MethodGet, "/api/wanted", nil)
+	reqMissingViewer = reqMissingViewer.WithContext(WithResolvedReadIdentity(reqMissingViewer.Context(), ResolvedReadIdentity{
+		Upstream: "hop/wl-commons",
+	}))
+	scope = srv.readCacheScope(reqMissingViewer, client)
+	if scope.cacheable {
+		t.Fatal("expected hosted scope with missing viewer to bypass cache")
+	}
+}
+
+func TestResolveClient_HostedPublicFallbackEstablishesCacheIdentity(t *testing.T) {
+	srv := NewHostedWorkspace(func(*http.Request) (*sdk.Client, error) {
+		return nil, errors.New("not authenticated")
+	}, nil)
+	srv.SetPublicClient(sdk.New(sdk.ClientConfig{
+		Upstream: "hop/wl-commons",
+		Mode:     "wild-west",
+	}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/wanted", nil)
+	req.Header.Set("X-Impersonate", "bob")
+
+	client, ok := srv.resolveClient(rec, req)
+	if !ok {
+		t.Fatal("expected hosted public fallback to resolve client")
+	}
+	scope := srv.readCacheScope(req, client)
+	if !scope.cacheable {
+		t.Fatal("expected public hosted scope to remain cacheable")
+	}
+	if scope.upstream != "wasteland/wl-commons" {
+		t.Fatalf("upstream = %q, want %q", scope.upstream, "wasteland/wl-commons")
+	}
+	if scope.viewer != publicCacheViewer {
+		t.Fatalf("viewer = %q, want %q", scope.viewer, publicCacheViewer)
+	}
+	if scope.impersonate != "bob" {
+		t.Fatalf("impersonate = %q, want %q", scope.impersonate, "bob")
 	}
 }

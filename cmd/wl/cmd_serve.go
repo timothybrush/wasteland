@@ -31,6 +31,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const (
+	hostedPublicUpstreamOrg = "wasteland"
+	hostedPublicUpstreamDB  = "wl-commons"
+	hostedPublicUpstream    = hostedPublicUpstreamOrg + "/" + hostedPublicUpstreamDB
+)
+
 var (
 	queryScoreboardDetailEntries = commons.QueryScoreboardDetail
 	queryScoreboardDumpData      = commons.QueryScoreboardDump
@@ -44,7 +50,7 @@ var (
 		return backend.NewRemoteDB(token, upstreamOrg, upstreamDB, forkOrg, forkDB, mode)
 	}
 	newHostedPublicDB = func() commons.DB {
-		return backend.NewRemoteDB("", "hop", "wl-commons", "hop", "wl-commons", "")
+		return backend.NewRemoteDB("", hostedPublicUpstreamOrg, hostedPublicUpstreamDB, hostedPublicUpstreamOrg, hostedPublicUpstreamDB, "")
 	}
 	newSelfHostedAPIServer = func(client *sdk.Client) selfHostedAPIServer {
 		return api.New(client)
@@ -244,6 +250,7 @@ func runServe(cmd *cobra.Command, stdout, stderr io.Writer) error {
 	client := sdk.New(sdk.ClientConfig{
 		DB:        db,
 		RigHandle: cfg.RigHandle,
+		Upstream:  cfg.Upstream,
 		Mode:      cfg.ResolveMode(),
 		Signing:   cfg.Signing,
 		HopURI:    cfg.HopURI,
@@ -371,7 +378,7 @@ func runServeHosted(cmd *cobra.Command, stdout, _ io.Writer) error {
 	// Build the API server with hosted workspace resolution.
 	apiServer := api.NewHostedWorkspace(hosted.NewClientFunc(), hosted.NewWorkspaceFunc())
 
-	// Public read-only RemoteDB against hop/wl-commons (no token needed).
+	// Public read-only RemoteDB against the canonical hosted upstream (no token needed).
 	publicDB := newHostedPublicDB()
 
 	// Scoreboard cache.
@@ -392,12 +399,13 @@ func runServeHosted(cmd *cobra.Command, stdout, _ io.Writer) error {
 
 	// Anonymous client for unauthenticated public reads (browse, detail, etc.).
 	// Uses a background-refreshing cache so no user request blocks on DoltHub.
-	pendingCache := newPendingItemsCache("hop", "wl-commons", 2*time.Minute)
+	pendingCache := newPendingItemsCache(hostedPublicUpstreamOrg, hostedPublicUpstreamDB, 2*time.Minute)
 	defer pendingCache.Stop()
 	anonClient := sdk.New(sdk.ClientConfig{
 		DB:                publicDB,
+		Upstream:          hostedPublicUpstream,
 		Mode:              federation.ModePR,
-		LoadPendingDetail: pendingDetailLoader("hop", "wl-commons", federation.ModePR, ""),
+		LoadPendingDetail: pendingDetailLoader(hostedPublicUpstreamOrg, hostedPublicUpstreamDB, federation.ModePR, ""),
 		ListPendingItems:  pendingCache.Get,
 	})
 	apiServer.SetPublicClient(anonClient)

@@ -917,8 +917,13 @@ func setupStagingTestServer(t *testing.T) (*SessionStore, *httptest.Server) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			client, ok := ClientFromContext(r.Context())
 			if ok {
+				scope, _ := api.ResolvedReadIdentityFromContext(r.Context())
 				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]string{"rig_handle": client.RigHandle()})
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"rig_handle": client.RigHandle(),
+					"upstream":   scope.Upstream,
+					"viewer":     scope.Viewer,
+				})
 			} else {
 				w.WriteHeader(http.StatusInternalServerError)
 			}
@@ -955,6 +960,38 @@ func TestAuthMiddleware_Impersonate_Staging_GET(t *testing.T) {
 
 	var result map[string]string
 	_ = json.NewDecoder(resp.Body).Decode(&result)
+	if result["rig_handle"] != "bob" {
+		t.Errorf("expected impersonated rig_handle=bob, got %s", result["rig_handle"])
+	}
+}
+
+func TestAuthMiddleware_Impersonate_Staging_PreservesResolvedViewerIdentity(t *testing.T) {
+	sessions, ts := setupStagingTestServer(t)
+	sessionID, _ := sessions.Create("conn-1")
+
+	req, _ := http.NewRequest("GET", ts.URL+"/api/wanted", nil)
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: SignSessionCookie(sessionID, "conn-1", testSecret)})
+	req.Header.Set("X-Impersonate", "bob")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // test cleanup
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result map[string]string
+	_ = json.NewDecoder(resp.Body).Decode(&result)
+	if result["viewer"] != "alice" {
+		t.Errorf("expected resolved viewer=alice, got %s", result["viewer"])
+	}
+	if result["upstream"] != "wasteland/wl-commons" {
+		t.Errorf("expected resolved upstream=wasteland/wl-commons, got %s", result["upstream"])
+	}
 	if result["rig_handle"] != "bob" {
 		t.Errorf("expected impersonated rig_handle=bob, got %s", result["rig_handle"])
 	}

@@ -307,6 +307,7 @@ func (wr *WorkspaceResolver) buildClient(wl *WastelandConfig, rigHandle, connect
 	client := sdk.New(sdk.ClientConfig{
 		DB:        db,
 		RigHandle: rigHandle,
+		Upstream:  wl.Upstream,
 		Mode:      mode,
 		LoadDiff: func(branch string) (string, error) {
 			return db.Diff(branch)

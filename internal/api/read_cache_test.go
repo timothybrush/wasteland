@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -156,6 +158,144 @@ func TestReadCache_InvalidateKey(t *testing.T) {
 	}
 }
 
+func TestReadCache_InvalidateMatching(t *testing.T) {
+	c := NewReadCache(time.Minute, 10)
+	_, _ = c.GetOrFetch("browse:hop:item", func() ([]byte, error) { return []byte("1"), nil })
+	_, _ = c.GetOrFetch("browse:gas:item", func() ([]byte, error) { return []byte("2"), nil })
+	_, _ = c.GetOrFetch("detail:hop:item", func() ([]byte, error) { return []byte("3"), nil })
+
+	c.InvalidateMatching(func(key string) bool {
+		return strings.HasPrefix(key, "browse:hop:")
+	})
+
+	if got := c.Get("browse:hop:item"); got != nil {
+		t.Fatalf("expected nil for matched key, got %q", got)
+	}
+	if got := c.Get("browse:gas:item"); got == nil {
+		t.Fatal("expected non-nil for unmatched browse key")
+	}
+	if got := c.Get("detail:hop:item"); got == nil {
+		t.Fatal("expected non-nil for unmatched detail key")
+	}
+}
+
+func TestReadCache_InvalidateMatching_FencesInflightFetch(t *testing.T) {
+	c := NewReadCache(time.Minute, 10)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	oldDone := make(chan struct{})
+	oldResult := make(chan []byte, 1)
+	oldErr := make(chan error, 1)
+
+	go func() {
+		defer close(oldDone)
+		got, err := c.GetOrFetch("browse:hop:item", func() ([]byte, error) {
+			close(started)
+			<-release
+			return []byte("stale"), nil
+		})
+		oldResult <- got
+		oldErr <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial fetch to start")
+	}
+
+	c.InvalidateMatching(func(key string) bool {
+		return key == "browse:hop:item"
+	})
+
+	freshDone := make(chan struct{})
+	var (
+		got []byte
+		err error
+	)
+	go func() {
+		defer close(freshDone)
+		got, err = c.GetOrFetch("browse:hop:item", func() ([]byte, error) {
+			return []byte("fresh"), nil
+		})
+	}()
+
+	select {
+	case <-freshDone:
+	case <-time.After(time.Second):
+		t.Fatal("fresh fetch blocked behind invalidated inflight call")
+	}
+	if err != nil {
+		t.Fatalf("fresh fetch error = %v", err)
+	}
+	if string(got) != "fresh" {
+		t.Fatalf("fresh fetch = %q, want %q", got, "fresh")
+	}
+
+	close(release)
+	select {
+	case <-oldDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for stale fetch to exit")
+	}
+	if err := <-oldErr; err != nil {
+		t.Fatalf("stale caller retry error = %v", err)
+	}
+	if got := <-oldResult; string(got) != "fresh" {
+		t.Fatalf("stale caller got %q, want %q", got, "fresh")
+	}
+
+	if got := c.Get("browse:hop:item"); string(got) != "fresh" {
+		t.Fatalf("cache = %q, want %q", got, "fresh")
+	}
+}
+
+func TestReadCache_InvalidateMatching_DoesNotRetryAfterContextCancel(t *testing.T) {
+	c := NewReadCache(time.Minute, 10)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var fetchCount atomic.Int32
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.GetOrFetchContext(ctx, "browse:hop:item", func(context.Context) ([]byte, error) {
+			fetchCount.Add(1)
+			close(started)
+			<-release
+			return []byte("stale"), nil
+		})
+		done <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial fetch to start")
+	}
+
+	c.InvalidateMatching(func(key string) bool {
+		return key == "browse:hop:item"
+	})
+	cancel()
+	close(release)
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want %v", err, context.Canceled)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for canceled caller")
+	}
+
+	if got := fetchCount.Load(); got != 1 {
+		t.Fatalf("fetchCount = %d, want 1", got)
+	}
+}
+
 func TestReadCache_Eviction(t *testing.T) {
 	c := NewReadCache(time.Minute, 3)
 
@@ -203,5 +343,36 @@ func TestReadCache_FetchError_NotCached(t *testing.T) {
 	// Error should not be cached.
 	if got := c.Get("k"); got != nil {
 		t.Fatalf("expected nil after fetch error, got %q", got)
+	}
+}
+
+func TestReadCache_FetchPanic_ReturnsErrorAndClearsInflight(t *testing.T) {
+	c := NewReadCache(time.Minute, 10)
+
+	_, err := c.GetOrFetch("k", func() ([]byte, error) {
+		panic("boom")
+	})
+	if err == nil || !strings.Contains(err.Error(), "fetch panicked") {
+		t.Fatalf("expected panic error, got %v", err)
+	}
+	if got := c.Get("k"); got != nil {
+		t.Fatalf("expected nil after panic, got %q", got)
+	}
+
+	c.mu.Lock()
+	_, ok := c.inflight["k"]
+	c.mu.Unlock()
+	if ok {
+		t.Fatal("expected inflight entry to be cleared after panic")
+	}
+
+	got, err := c.GetOrFetch("k", func() ([]byte, error) {
+		return []byte("ok"), nil
+	})
+	if err != nil {
+		t.Fatalf("retry fetch error = %v", err)
+	}
+	if string(got) != "ok" {
+		t.Fatalf("retry fetch = %q, want %q", got, "ok")
 	}
 }

@@ -32,6 +32,12 @@ func (s *Server) resolveClient(w http.ResponseWriter, r *http.Request) (*sdk.Cli
 			if impersonate := r.Header.Get("X-Impersonate"); impersonate != "" && s.hosted {
 				c = c.WithRigHandle(impersonate)
 			}
+			if s.hosted {
+				*r = *r.WithContext(WithResolvedReadIdentity(r.Context(), ResolvedReadIdentity{
+					Upstream: s.publicClient.Upstream(),
+					Public:   true,
+				}))
+			}
 			return c, true
 		}
 		writeError(w, http.StatusUnauthorized, "not authenticated")
@@ -55,14 +61,24 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		attribute.String("mode", client.Mode()),
 		attribute.String("view", filter.View),
 	)
-	key := client.RigHandle() + ":" + canonicalBrowseKey(r)
-	data, err := s.browseCache.GetOrFetchContext(ctx, key, func(ctx context.Context) ([]byte, error) {
+	scope := s.readCacheScope(r, client)
+	fetch := func(ctx context.Context) ([]byte, error) {
 		result, err := client.BrowseContext(ctx, filter)
 		if err != nil {
 			return nil, err
 		}
 		return json.Marshal(toBrowseResponse(result))
-	})
+	}
+	key := browseCacheKey(scope, r)
+	var (
+		data []byte
+		err  error
+	)
+	if scope.cacheable {
+		data, err = s.browseCache.GetOrFetchContext(ctx, key, fetch)
+	} else {
+		data, err = fetch(ctx)
+	}
 	if err != nil {
 		span.RecordError(err)
 		// Auth errors should not serve stale data — the user needs to reconnect.
@@ -71,22 +87,24 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Try to serve stale cache data with a warning instead of a hard error.
-		stale := s.browseCache.GetStale(key)
-		if stale != nil {
-			slog.Warn("serving stale browse data due to upstream error", "error", err)
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Cache-Control", "no-store")
-			w.WriteHeader(http.StatusOK)
-			// Inject a warning into the stale response.
-			var resp BrowseResponse
-			if json.Unmarshal(stale, &resp) == nil {
-				resp.Warning = "Upstream database is temporarily unavailable. Showing cached data."
-				if patched, merr := json.Marshal(resp); merr == nil {
-					stale = patched
+		if scope.cacheable {
+			stale := s.browseCache.GetStale(key)
+			if stale != nil {
+				slog.Warn("serving stale browse data due to upstream error", "error", err)
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Cache-Control", "no-store")
+				w.WriteHeader(http.StatusOK)
+				// Inject a warning into the stale response.
+				var resp BrowseResponse
+				if json.Unmarshal(stale, &resp) == nil {
+					resp.Warning = "Upstream database is temporarily unavailable. Showing cached data."
+					if patched, merr := json.Marshal(resp); merr == nil {
+						stale = patched
+					}
 				}
+				_, _ = w.Write(stale)
+				return
 			}
-			_, _ = w.Write(stale)
-			return
 		}
 		// No stale data — return a 503 with a clear outage message.
 		msg := "Upstream database is temporarily unavailable — please try again in a moment."
@@ -118,14 +136,24 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	span.SetAttributes(attribute.String("mode", client.Mode()))
 	id := r.PathValue("id")
-	key := client.RigHandle() + ":" + id
-	data, err := s.detailCache.GetOrFetchContext(ctx, key, func(ctx context.Context) ([]byte, error) {
+	scope := s.readCacheScope(r, client)
+	fetch := func(ctx context.Context) ([]byte, error) {
 		result, err := client.DetailContext(ctx, id)
 		if err != nil {
 			return nil, err
 		}
 		return json.Marshal(toDetailResponse(result, client.Mode()))
-	})
+	}
+	key := detailCacheKey(scope, id)
+	var (
+		data []byte
+		err  error
+	)
+	if scope.cacheable {
+		data, err = s.detailCache.GetOrFetchContext(ctx, key, fetch)
+	} else {
+		data, err = fetch(ctx)
+	}
 	if err != nil {
 		span.RecordError(err)
 		if strings.Contains(err.Error(), "not found") {
@@ -138,13 +166,15 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Try stale cache before returning a hard error.
-		if stale := s.detailCache.GetStale(key); stale != nil {
-			slog.Warn("serving stale detail data due to upstream error", "error", err)
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Cache-Control", "no-store")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(stale)
-			return
+		if scope.cacheable {
+			if stale := s.detailCache.GetStale(key); stale != nil {
+				slog.Warn("serving stale detail data due to upstream error", "error", err)
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Cache-Control", "no-store")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(stale)
+				return
+			}
 		}
 		msg := "Upstream database is temporarily unavailable — please try again in a moment."
 		if isTokenPermissionError(err) {
@@ -292,18 +322,66 @@ func canonicalBrowseKey(r *http.Request) string {
 	return canon.Encode()
 }
 
-// invalidateReadCaches busts browse and detail caches after a mutation.
-// Detail cache keys are prefixed with RigHandle (e.g. "rig:itemID"), so
-// we invalidate the entire detail cache to cover all user-specific entries.
-func (s *Server) invalidateReadCaches(_ string) {
-	s.browseCache.Invalidate()
-	s.detailCache.Invalidate()
+// invalidateReadCaches busts browse caches for the active upstream and detail
+// caches for the affected item on that upstream.
+func (s *Server) invalidateReadCaches(r *http.Request, client *sdk.Client, wantedID string) {
+	if s.hosted && !s.hasCanonicalHostedReadIdentity(r) {
+		s.invalidateAllCaches()
+		return
+	}
+	scope := s.readCacheScope(r, client)
+	s.invalidateBrowseCaches(scope.upstream)
+	s.invalidateDetailCaches(scope.upstream, wantedID)
+}
+
+func (s *Server) invalidateBrowseReadCaches(r *http.Request, client *sdk.Client) {
+	if s.hosted && !s.hasCanonicalHostedReadIdentity(r) {
+		s.invalidateAllCaches()
+		return
+	}
+	s.invalidateBrowseCaches(s.readCacheScope(r, client).upstream)
+}
+
+func (s *Server) invalidateBrowseCaches(upstream string) {
+	prefix := browseCachePrefix(upstream)
+	s.browseCache.InvalidateMatching(func(key string) bool {
+		return strings.HasPrefix(key, prefix)
+	})
+}
+
+func (s *Server) invalidateDetailCaches(upstream, wantedID string) {
+	prefix := detailCachePrefix(upstream)
+	suffix := detailCacheSuffix(wantedID)
+	s.detailCache.InvalidateMatching(func(key string) bool {
+		return strings.HasPrefix(key, prefix) && strings.HasSuffix(key, suffix)
+	})
+}
+
+func (s *Server) invalidateUpstreamReadCaches(r *http.Request, client *sdk.Client) {
+	if s.hosted && !s.hasCanonicalHostedReadIdentity(r) {
+		s.invalidateAllCaches()
+		return
+	}
+	scope := s.readCacheScope(r, client)
+	s.invalidateBrowseCaches(scope.upstream)
+	prefix := detailCachePrefix(scope.upstream)
+	s.detailCache.InvalidateMatching(func(key string) bool {
+		return strings.HasPrefix(key, prefix)
+	})
 }
 
 // invalidateAllCaches busts both browse and detail caches entirely.
 func (s *Server) invalidateAllCaches() {
 	s.browseCache.Invalidate()
 	s.detailCache.Invalidate()
+}
+
+func (s *Server) hasCanonicalHostedReadIdentity(r *http.Request) bool {
+	if !s.hosted {
+		return true
+	}
+	identity, ok := ResolvedReadIdentityFromContext(r.Context())
+	return ok && identity.Upstream != "" && identity.Viewer != ""
 }
 
 // isUpstreamAuthError returns true if the error is a DoltHub authentication
@@ -384,7 +462,7 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, err)
 		return
 	}
-	s.browseCache.Invalidate()
+	s.invalidateBrowseReadCaches(r, client)
 	writeJSON(w, http.StatusCreated, toMutationResponse(result, client.Mode()))
 }
 
@@ -417,7 +495,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, err)
 		return
 	}
-	s.invalidateReadCaches(id)
+	s.invalidateReadCaches(r, client, id)
 	writeJSON(w, http.StatusOK, toMutationResponse(result, client.Mode()))
 }
 
@@ -432,7 +510,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, err)
 		return
 	}
-	s.invalidateReadCaches(id)
+	s.invalidateReadCaches(r, client, id)
 	writeJSON(w, http.StatusOK, toMutationResponse(result, client.Mode()))
 }
 
@@ -447,7 +525,7 @@ func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, err)
 		return
 	}
-	s.invalidateReadCaches(id)
+	s.invalidateReadCaches(r, client, id)
 	writeJSON(w, http.StatusOK, toMutationResponse(result, client.Mode()))
 }
 
@@ -462,7 +540,7 @@ func (s *Server) handleUnclaim(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, err)
 		return
 	}
-	s.invalidateReadCaches(id)
+	s.invalidateReadCaches(r, client, id)
 	writeJSON(w, http.StatusOK, toMutationResponse(result, client.Mode()))
 }
 
@@ -486,7 +564,7 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, err)
 		return
 	}
-	s.invalidateReadCaches(id)
+	s.invalidateReadCaches(r, client, id)
 	writeJSON(w, http.StatusOK, toMutationResponse(result, client.Mode()))
 }
 
@@ -522,7 +600,7 @@ func (s *Server) handleAccept(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, err)
 		return
 	}
-	s.invalidateReadCaches(id)
+	s.invalidateReadCaches(r, client, id)
 	writeJSON(w, http.StatusOK, toMutationResponse(result, client.Mode()))
 }
 
@@ -562,7 +640,7 @@ func (s *Server) handleAcceptUpstream(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, err)
 		return
 	}
-	s.invalidateReadCaches(id)
+	s.invalidateReadCaches(r, client, id)
 	writeJSON(w, http.StatusOK, toMutationResponse(result, client.Mode()))
 }
 
@@ -585,7 +663,7 @@ func (s *Server) handleRejectUpstream(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, err)
 		return
 	}
-	s.invalidateReadCaches(id)
+	s.invalidateReadCaches(r, client, id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "rejected"})
 }
 
@@ -609,7 +687,7 @@ func (s *Server) handleCloseUpstream(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, err)
 		return
 	}
-	s.invalidateReadCaches(id)
+	s.invalidateReadCaches(r, client, id)
 	writeJSON(w, http.StatusOK, toMutationResponse(result, client.Mode()))
 }
 
@@ -629,7 +707,7 @@ func (s *Server) handleReject(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, err)
 		return
 	}
-	s.invalidateReadCaches(id)
+	s.invalidateReadCaches(r, client, id)
 	writeJSON(w, http.StatusOK, toMutationResponse(result, client.Mode()))
 }
 
@@ -644,7 +722,7 @@ func (s *Server) handleClose(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, err)
 		return
 	}
-	s.invalidateReadCaches(id)
+	s.invalidateReadCaches(r, client, id)
 	writeJSON(w, http.StatusOK, toMutationResponse(result, client.Mode()))
 }
 
@@ -660,7 +738,8 @@ func (s *Server) handleApplyBranch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.invalidateAllCaches()
+	// Branch operations only affect the active upstream's working set.
+	s.invalidateUpstreamReadCaches(r, client)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "applied"})
 }
 
@@ -674,7 +753,8 @@ func (s *Server) handleDiscardBranch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.invalidateAllCaches()
+	// Branch operations only affect the active upstream's working set.
+	s.invalidateUpstreamReadCaches(r, client)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "discarded"})
 }
 
@@ -738,6 +818,7 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.invalidateAllCaches()
+	// Sync refreshes only the active upstream's view.
+	s.invalidateUpstreamReadCaches(r, client)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "synced"})
 }

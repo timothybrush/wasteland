@@ -15,6 +15,7 @@ var newSDKClient = func(cfg *federation.Config, noPush bool) (*sdk.Client, error
 	return sdk.New(sdk.ClientConfig{
 		DB:        db,
 		RigHandle: cfg.RigHandle,
+		Upstream:  cfg.Upstream,
 		Mode:      cfg.ResolveMode(),
 		Signing:   cfg.Signing,
 		HopURI:    cfg.HopURI,

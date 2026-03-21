@@ -14,6 +14,7 @@ import (
 type ClientConfig struct {
 	DB        commons.DB // database backend (required)
 	RigHandle string     // current rig handle (required)
+	Upstream  string     // canonical upstream identifier when known
 	Mode      string     // "wild-west" or "pr"
 	Signing   bool       // GPG-signed dolt commits
 	HopURI    string     // rig's HOP protocol URI
@@ -35,6 +36,7 @@ type ClientConfig struct {
 type Client struct {
 	db        commons.DB
 	rigHandle string
+	upstream  string
 	mode      string
 	signing   bool
 	hopURI    string
@@ -67,6 +69,7 @@ func New(cfg ClientConfig) *Client {
 	return &Client{
 		db:                cfg.DB,
 		rigHandle:         cfg.RigHandle,
+		upstream:          cfg.Upstream,
 		mode:              cfg.Mode,
 		signing:           cfg.Signing,
 		hopURI:            cfg.HopURI,
@@ -89,6 +92,9 @@ func (c *Client) Mode() string { return c.mode }
 // RigHandle returns the current rig handle.
 func (c *Client) RigHandle() string { return c.rigHandle }
 
+// Upstream returns the canonical upstream identifier when known.
+func (c *Client) Upstream() string { return c.upstream }
+
 // WithRigHandle returns a shallow copy of the client with a different rig handle.
 // The copy shares the same DB connection and read-only callbacks but uses the
 // new handle for browse/detail/dashboard filtering. Intended for staging-only
@@ -97,6 +103,7 @@ func (c *Client) WithRigHandle(handle string) *Client {
 	return &Client{
 		db:                c.db,
 		rigHandle:         handle,
+		upstream:          c.upstream,
 		mode:              c.mode,
 		signing:           c.signing,
 		hopURI:            c.hopURI,
