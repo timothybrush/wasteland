@@ -65,13 +65,13 @@ func TestResolvePort_InvalidEnvFallsBackToFlag(t *testing.T) {
 }
 
 func TestHostedPublicUpstream_IsCanonical(t *testing.T) {
-	if hostedPublicUpstreamOrg != "wasteland" {
+	if hostedPublicUpstreamOrg != "hop" {
 		t.Fatalf("hostedPublicUpstreamOrg = %q", hostedPublicUpstreamOrg)
 	}
 	if hostedPublicUpstreamDB != "wl-commons" {
 		t.Fatalf("hostedPublicUpstreamDB = %q", hostedPublicUpstreamDB)
 	}
-	if hostedPublicUpstream != "wasteland/wl-commons" {
+	if hostedPublicUpstream != "hop/wl-commons" {
 		t.Fatalf("hostedPublicUpstream = %q", hostedPublicUpstream)
 	}
 }

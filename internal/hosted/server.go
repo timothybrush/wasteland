@@ -576,7 +576,7 @@ func (e *authError) Error() string { return e.msg }
 // not restart us for an upstream outage).
 func healthHandler() http.HandlerFunc {
 	client := &http.Client{Timeout: 3 * time.Second}
-	const probe = "https://www.dolthub.com/api/v1alpha1/hop/wl-commons/main?q=SELECT%201"
+	probe := PublicDoltHubQueryURL("SELECT 1")
 
 	return func(w http.ResponseWriter, _ *http.Request) {
 		dolthub := "ok"
@@ -608,8 +608,7 @@ var ProbeDoltHubToken = func(apiKey string) error {
 	if apiKey == "" {
 		return nil
 	}
-	req, err := http.NewRequest("GET",
-		"https://www.dolthub.com/api/v1alpha1/hop/wl-commons/main?q=SELECT%201", nil)
+	req, err := http.NewRequest("GET", PublicDoltHubQueryURL("SELECT 1"), nil)
 	if err != nil {
 		return nil // don't block connect for request construction errors
 	}

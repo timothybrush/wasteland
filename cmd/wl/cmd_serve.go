@@ -34,9 +34,9 @@ import (
 )
 
 const (
-	hostedPublicUpstreamOrg = "wasteland"
-	hostedPublicUpstreamDB  = "wl-commons"
-	hostedPublicUpstream    = hostedPublicUpstreamOrg + "/" + hostedPublicUpstreamDB
+	hostedPublicUpstreamOrg = hosted.PublicUpstreamOrg
+	hostedPublicUpstreamDB  = hosted.PublicUpstreamDB
+	hostedPublicUpstream    = hosted.PublicUpstream
 	pendingRefreshTimeout   = 30 * time.Second
 )
 
