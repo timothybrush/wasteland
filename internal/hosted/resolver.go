@@ -376,6 +376,13 @@ func (wr *WorkspaceResolver) buildClient(wl *WastelandConfig, rigHandle, connect
 			entry.Signing = signing
 			return wr.nango.SetMetadata(connectionID, currentMeta)
 		},
+		LoadPendingItem: func(wantedID string, pending sdk.PendingItem) (*commons.WantedItem, error) {
+			if pending.ForkOwner == "" || pending.Branch == "" {
+				return nil, fmt.Errorf("pending item %q is missing fork owner or branch", wantedID)
+			}
+			forkDB := backend.NewRemoteDB(apiKey, upOrg, upDB, pending.ForkOwner, upDB, mode)
+			return commons.QueryWantedDetailAsOf(forkDB, wantedID, pending.Branch)
+		},
 		LoadPendingDetail: func(wantedID string, pending sdk.PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error) {
 			if pending.ForkOwner == "" || pending.Branch == "" {
 				return nil, nil, nil, fmt.Errorf("pending item %q is missing fork owner or branch", wantedID)

@@ -961,6 +961,32 @@ func ghListPendingItems(ghPath, upstreamRepo string) func() (map[string][]sdk.Pe
 	}
 }
 
+// pendingItemLoaderCallback returns a callback that can read branch-only
+// pending item summaries from the correct DoltHub fork. Returns nil when the
+// current config does not support fork-aware remote reads.
+func pendingItemLoaderCallback(cfg *federation.Config) func(string, sdk.PendingItem) (*commons.WantedItem, error) {
+	if cfg.ResolveBackend() == federation.BackendLocal || cfg.ResolveProviderType() != "dolthub" {
+		return nil
+	}
+
+	upstreamOrg, db, err := federation.ParseUpstream(cfg.Upstream)
+	if err != nil {
+		return nil
+	}
+
+	return pendingItemLoader(upstreamOrg, db, cfg.ResolveMode(), commons.DoltHubToken())
+}
+
+func pendingItemLoader(upstreamOrg, db, mode, token string) func(string, sdk.PendingItem) (*commons.WantedItem, error) {
+	return func(wantedID string, pending sdk.PendingItem) (*commons.WantedItem, error) {
+		if pending.ForkOwner == "" || pending.Branch == "" {
+			return nil, fmt.Errorf("pending item %q is missing fork owner or branch", wantedID)
+		}
+		forkDB := backend.NewRemoteDB(token, upstreamOrg, db, pending.ForkOwner, db, mode)
+		return commons.QueryWantedDetailAsOf(forkDB, wantedID, pending.Branch)
+	}
+}
+
 // pendingDetailLoaderCallback returns a callback that can read branch-only
 // pending items from the correct DoltHub fork. Returns nil when the current
 // config does not support fork-aware remote reads.

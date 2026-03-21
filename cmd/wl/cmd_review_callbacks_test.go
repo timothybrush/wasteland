@@ -141,11 +141,22 @@ func TestBranchURLCallback(t *testing.T) {
 }
 
 func TestPendingDetailLoaderHelpers(t *testing.T) {
+	if cb := pendingItemLoaderCallback(&federation.Config{Backend: federation.BackendLocal}); cb != nil {
+		t.Fatal("local backend should not create pending item loader")
+	}
+	if cb := pendingItemLoaderCallback(&federation.Config{Backend: federation.BackendRemote, ProviderType: "github"}); cb != nil {
+		t.Fatal("non-dolthub provider should not create pending item loader")
+	}
 	if cb := pendingDetailLoaderCallback(&federation.Config{Backend: federation.BackendLocal}); cb != nil {
 		t.Fatal("local backend should not create pending detail loader")
 	}
 	if cb := pendingDetailLoaderCallback(&federation.Config{Backend: federation.BackendRemote, ProviderType: "github"}); cb != nil {
 		t.Fatal("non-dolthub provider should not create pending detail loader")
+	}
+
+	itemLoader := pendingItemLoader("hop", "wl-commons", federation.ModePR, "token")
+	if _, err := itemLoader("w-1", sdk.PendingItem{}); err == nil || !strings.Contains(err.Error(), "missing fork owner or branch") {
+		t.Fatalf("err = %v", err)
 	}
 
 	loader := pendingDetailLoader("hop", "wl-commons", federation.ModePR, "token")
@@ -166,7 +177,7 @@ func TestPendingDetailLoader_LoadsForkBranchDetail(t *testing.T) {
 
 		var resp map[string]any
 		switch {
-		case strings.Contains(q, "FROM wanted WHERE id='w-1'"):
+		case strings.Contains(q, "LEFT JOIN completions") && strings.Contains(q, "WHERE w.id='w-1'"):
 			resp = map[string]any{
 				"query_execution_status": "Success",
 				"schema_fragment": []map[string]string{
@@ -183,67 +194,51 @@ func TestPendingDetailLoader_LoadsForkBranchDetail(t *testing.T) {
 					{"columnName": "effort_level", "columnType": "varchar(32)"},
 					{"columnName": "created_at", "columnType": "varchar(64)"},
 					{"columnName": "updated_at", "columnType": "varchar(64)"},
-				},
-				"rows": []map[string]string{{
-					"id":           "w-1",
-					"title":        "Fix auth",
-					"description":  "",
-					"project":      "",
-					"type":         "",
-					"priority":     "2",
-					"tags":         "",
-					"posted_by":    "alice",
-					"claimed_by":   "alice",
-					"status":       "in_review",
-					"effort_level": "medium",
-					"created_at":   "",
-					"updated_at":   "",
-				}},
-			}
-		case strings.Contains(q, "FROM completions WHERE wanted_id='w-1'"):
-			resp = map[string]any{
-				"query_execution_status": "Success",
-				"schema_fragment": []map[string]string{
-					{"columnName": "id", "columnType": "varchar(20)"},
-					{"columnName": "wanted_id", "columnType": "varchar(20)"},
+					{"columnName": "completion_id", "columnType": "varchar(20)"},
+					{"columnName": "completion_wanted_id", "columnType": "varchar(20)"},
 					{"columnName": "completed_by", "columnType": "varchar(255)"},
 					{"columnName": "evidence", "columnType": "text"},
-					{"columnName": "stamp_id", "columnType": "varchar(64)"},
+					{"columnName": "completion_stamp_id", "columnType": "varchar(64)"},
 					{"columnName": "validated_by", "columnType": "varchar(255)"},
+					{"columnName": "stamp_record_id", "columnType": "varchar(20)"},
+					{"columnName": "stamp_author", "columnType": "varchar(255)"},
+					{"columnName": "stamp_subject", "columnType": "varchar(255)"},
+					{"columnName": "stamp_valence", "columnType": "text"},
+					{"columnName": "stamp_severity", "columnType": "varchar(32)"},
+					{"columnName": "stamp_context_id", "columnType": "varchar(255)"},
+					{"columnName": "stamp_context_type", "columnType": "varchar(255)"},
+					{"columnName": "stamp_skill_tags", "columnType": "text"},
+					{"columnName": "stamp_message", "columnType": "text"},
 				},
 				"rows": []map[string]string{{
-					"id":           "c-1",
-					"wanted_id":    "w-1",
-					"completed_by": "alice",
-					"evidence":     "https://example/evidence",
-					"stamp_id":     "s-1",
-					"validated_by": "reviewer",
-				}},
-			}
-		case strings.Contains(q, "FROM stamps WHERE id='s-1'"):
-			resp = map[string]any{
-				"query_execution_status": "Success",
-				"schema_fragment": []map[string]string{
-					{"columnName": "id", "columnType": "varchar(20)"},
-					{"columnName": "author", "columnType": "varchar(255)"},
-					{"columnName": "subject", "columnType": "varchar(255)"},
-					{"columnName": "valence", "columnType": "text"},
-					{"columnName": "severity", "columnType": "varchar(32)"},
-					{"columnName": "context_id", "columnType": "varchar(255)"},
-					{"columnName": "context_type", "columnType": "varchar(255)"},
-					{"columnName": "skill_tags", "columnType": "text"},
-					{"columnName": "message", "columnType": "text"},
-				},
-				"rows": []map[string]string{{
-					"id":           "s-1",
-					"author":       "reviewer",
-					"subject":      "alice",
-					"valence":      `{"quality":1,"reliability":1}`,
-					"severity":     "info",
-					"context_id":   "",
-					"context_type": "",
-					"skill_tags":   "",
-					"message":      "looks good",
+					"id":                   "w-1",
+					"title":                "Fix auth",
+					"description":          "",
+					"project":              "",
+					"type":                 "",
+					"priority":             "2",
+					"tags":                 "",
+					"posted_by":            "alice",
+					"claimed_by":           "alice",
+					"status":               "in_review",
+					"effort_level":         "medium",
+					"created_at":           "",
+					"updated_at":           "",
+					"completion_id":        "c-1",
+					"completion_wanted_id": "w-1",
+					"completed_by":         "alice",
+					"evidence":             "https://example/evidence",
+					"completion_stamp_id":  "s-1",
+					"validated_by":         "reviewer",
+					"stamp_record_id":      "s-1",
+					"stamp_author":         "reviewer",
+					"stamp_subject":        "alice",
+					"stamp_valence":        `{"quality":1,"reliability":1}`,
+					"stamp_severity":       "info",
+					"stamp_context_id":     "",
+					"stamp_context_type":   "",
+					"stamp_skill_tags":     "",
+					"stamp_message":        "looks good",
 				}},
 			}
 		default:

@@ -513,24 +513,7 @@ func QueryWantedDetailAsOf(db DB, wantedID, ref string) (*WantedItem, error) {
 	return queryWantedDetailRef(db, wantedID, ref)
 }
 
-func queryWantedDetailRef(db DB, wantedID, ref string) (*WantedItem, error) {
-	query := fmt.Sprintf(`SELECT id, title, COALESCE(description,'') as description, COALESCE(project,'') as project, COALESCE(type,'') as type, priority, COALESCE(tags,'') as tags, COALESCE(posted_by,'') as posted_by, COALESCE(claimed_by,'') as claimed_by, status, COALESCE(effort_level,'medium') as effort_level, COALESCE(created_at,'') as created_at, COALESCE(updated_at,'') as updated_at FROM wanted WHERE id='%s'`,
-		EscapeSQL(wantedID))
-
-	output, err := db.Query(query, ref)
-	if err != nil {
-		return nil, err
-	}
-
-	rows := parseSimpleCSV(output)
-	if len(rows) == 0 {
-		if ref != "" {
-			return nil, fmt.Errorf("wanted item %q not found on ref %s", wantedID, ref)
-		}
-		return nil, fmt.Errorf("wanted item %q not found", wantedID)
-	}
-
-	row := rows[0]
+func parseWantedDetailRow(wantedID string, row map[string]string) *WantedItem {
 	priority, err := strconv.Atoi(row["priority"])
 	if err != nil && row["priority"] != "" {
 		slog.Warn("malformed priority value", "wanted_id", wantedID, "value", row["priority"])
@@ -550,7 +533,88 @@ func queryWantedDetailRef(db DB, wantedID, ref string) (*WantedItem, error) {
 		EffortLevel: row["effort_level"],
 		CreatedAt:   row["created_at"],
 		UpdatedAt:   row["updated_at"],
-	}, nil
+	}
+}
+
+func queryWantedDetailRef(db DB, wantedID, ref string) (*WantedItem, error) {
+	query := fmt.Sprintf(`SELECT id, title, COALESCE(description,'') as description, COALESCE(project,'') as project, COALESCE(type,'') as type, priority, COALESCE(tags,'') as tags, COALESCE(posted_by,'') as posted_by, COALESCE(claimed_by,'') as claimed_by, status, COALESCE(effort_level,'medium') as effort_level, COALESCE(created_at,'') as created_at, COALESCE(updated_at,'') as updated_at FROM wanted WHERE id='%s'`,
+		EscapeSQL(wantedID))
+
+	output, err := db.Query(query, ref)
+	if err != nil {
+		return nil, err
+	}
+
+	rows := parseSimpleCSV(output)
+	if len(rows) == 0 {
+		if ref != "" {
+			return nil, fmt.Errorf("wanted item %q not found on ref %s", wantedID, ref)
+		}
+		return nil, fmt.Errorf("wanted item %q not found", wantedID)
+	}
+
+	return parseWantedDetailRow(wantedID, rows[0]), nil
+}
+
+func queryFullDetailJoinedRef(db DB, wantedID, ref string) (*WantedItem, *CompletionRecord, *Stamp, error) {
+	query := fmt.Sprintf(`SELECT w.id, w.title, COALESCE(w.description,'') as description, COALESCE(w.project,'') as project, COALESCE(w.type,'') as type, w.priority, COALESCE(w.tags,'') as tags, COALESCE(w.posted_by,'') as posted_by, COALESCE(w.claimed_by,'') as claimed_by, w.status, COALESCE(w.effort_level,'medium') as effort_level, COALESCE(w.created_at,'') as created_at, COALESCE(w.updated_at,'') as updated_at, COALESCE(c.id,'') as completion_id, COALESCE(c.wanted_id,'') as completion_wanted_id, COALESCE(c.completed_by,'') as completed_by, COALESCE(c.evidence,'') as evidence, COALESCE(c.stamp_id,'') as completion_stamp_id, COALESCE(c.validated_by,'') as validated_by, COALESCE(s.id,'') as stamp_record_id, COALESCE(s.author,'') as stamp_author, COALESCE(s.subject,'') as stamp_subject, COALESCE(s.valence,'') as stamp_valence, COALESCE(s.severity,'') as stamp_severity, COALESCE(s.context_id,'') as stamp_context_id, COALESCE(s.context_type,'') as stamp_context_type, COALESCE(s.skill_tags,'') as stamp_skill_tags, COALESCE(s.message,'') as stamp_message FROM wanted w LEFT JOIN completions c ON c.wanted_id = w.id LEFT JOIN stamps s ON s.id = c.stamp_id WHERE w.id='%s'`,
+		EscapeSQL(wantedID))
+
+	output, err := db.Query(query, ref)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	rows := parseSimpleCSV(output)
+	if len(rows) == 0 {
+		if ref != "" {
+			return nil, nil, nil, fmt.Errorf("wanted item %q not found on ref %s", wantedID, ref)
+		}
+		return nil, nil, nil, fmt.Errorf("wanted item %q not found", wantedID)
+	}
+
+	row := rows[0]
+	item := parseWantedDetailRow(wantedID, row)
+	if item.Status != "in_review" && item.Status != "completed" {
+		return item, nil, nil, nil
+	}
+
+	var completion *CompletionRecord
+	if row["completion_id"] != "" {
+		completion = &CompletionRecord{
+			ID:          row["completion_id"],
+			WantedID:    row["completion_wanted_id"],
+			CompletedBy: row["completed_by"],
+			Evidence:    row["evidence"],
+			StampID:     row["completion_stamp_id"],
+			ValidatedBy: row["validated_by"],
+		}
+	}
+
+	var stamp *Stamp
+	if row["stamp_record_id"] != "" {
+		var valence struct {
+			Quality     int `json:"quality"`
+			Reliability int `json:"reliability"`
+		}
+		if v := row["stamp_valence"]; v != "" {
+			_ = json.Unmarshal([]byte(v), &valence)
+		}
+		stamp = &Stamp{
+			ID:          row["stamp_record_id"],
+			Author:      row["stamp_author"],
+			Subject:     row["stamp_subject"],
+			Quality:     valence.Quality,
+			Reliability: valence.Reliability,
+			Severity:    row["stamp_severity"],
+			ContextID:   row["stamp_context_id"],
+			ContextType: row["stamp_context_type"],
+			SkillTags:   parseTagsJSON(row["stamp_skill_tags"]),
+			Message:     row["stamp_message"],
+		}
+	}
+
+	return item, completion, stamp, nil
 }
 
 // QueryStamp fetches a stamp by ID.

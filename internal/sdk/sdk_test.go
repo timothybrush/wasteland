@@ -61,6 +61,7 @@ type fakeDB struct {
 	pushMainCalls   int
 	syncCalls       int
 	execCalls       []execCall
+	queryCalls      []string
 }
 
 type laggyBranchDB struct {
@@ -103,9 +104,12 @@ func csvQuote(s string) string {
 func (f *fakeDB) Query(sql, ref string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.queryCalls = append(f.queryCalls, sql)
 
 	// Determine which item(s) to return based on the SQL and ref.
 	switch {
+	case strings.Contains(sql, "LEFT JOIN completions") && strings.Contains(sql, "FROM wanted w"):
+		return f.queryFullDetailJoined(sql, ref)
 	case strings.Contains(sql, "FROM wanted") && strings.Contains(sql, "WHERE id"):
 		return f.queryWantedByID(sql, ref)
 	case strings.Contains(sql, "FROM wanted"):
@@ -117,6 +121,73 @@ func (f *fakeDB) Query(sql, ref string) (string, error) {
 	default:
 		return "id\n", nil
 	}
+}
+
+func (f *fakeDB) queryFullDetailJoined(sql, ref string) (string, error) { //nolint:unparam // error return needed for interface consistency
+	id := extractQualifiedWhereID(sql)
+	item := f.resolveItem(id, ref)
+	header := "id,title,description,project,type,priority,tags,posted_by,claimed_by,status,effort_level,created_at,updated_at,completion_id,completion_wanted_id,completed_by,evidence,completion_stamp_id,validated_by,stamp_record_id,stamp_author,stamp_subject,stamp_valence,stamp_severity,stamp_context_id,stamp_context_type,stamp_skill_tags,stamp_message"
+	if item == nil {
+		return header + "\n", nil
+	}
+
+	completion := f.completions[id]
+	var stamp *fakeStamp
+	if completion != nil && completion.StampID != "" {
+		stamp = f.stamps[completion.StampID]
+	}
+
+	row := []string{
+		item.ID,
+		csvQuote(item.Title),
+		csvQuote(item.Description),
+		item.Project,
+		item.Type,
+		fmt.Sprintf("%d", item.Priority),
+		"",
+		item.PostedBy,
+		item.ClaimedBy,
+		item.Status,
+		item.EffortLevel,
+		item.CreatedAt,
+		item.UpdatedAt,
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+	}
+	if completion != nil {
+		row[13] = completion.ID
+		row[14] = completion.WantedID
+		row[15] = csvQuote(completion.CompletedBy)
+		row[16] = csvQuote(completion.Evidence)
+		row[17] = completion.StampID
+		row[18] = csvQuote(completion.ValidatedBy)
+	}
+	if stamp != nil {
+		row[19] = stamp.ID
+		row[20] = csvQuote(stamp.Author)
+		row[21] = csvQuote(stamp.Subject)
+		row[22] = csvQuote(stamp.Valence)
+		row[23] = csvQuote(stamp.Severity)
+		row[24] = csvQuote(stamp.ContextID)
+		row[25] = csvQuote(stamp.ContextType)
+		row[26] = csvQuote(stamp.SkillTags)
+		row[27] = csvQuote(stamp.Message)
+	}
+
+	return header + "\n" + strings.Join(row, ",") + "\n", nil
 }
 
 func (f *fakeDB) queryWantedByID(sql, ref string) (string, error) { //nolint:unparam // error return needed for interface consistency
@@ -592,6 +663,10 @@ func (f *fakeDB) itemDetailCSV(item *fakeItem) string {
 
 func extractWhereID(sql string) string {
 	return extractEqValue(sql, "id")
+}
+
+func extractQualifiedWhereID(sql string) string {
+	return extractEqValue(sql, "w.id")
 }
 
 func extractEqValue(sql, field string) string {
@@ -1234,7 +1309,7 @@ func TestDetail_PRMode(t *testing.T) {
 	}
 }
 
-func TestBrowse_AddsPendingOnlyItem_UsesPendingDetailLoader(t *testing.T) {
+func TestBrowse_AddsPendingOnlyItem_UsesPendingItemLoader(t *testing.T) {
 	mainDB := newFakeDB()
 	forkDB := newFakeDB()
 	forkDB.branches["wl/charlie/w-new"] = true
@@ -1256,8 +1331,8 @@ func TestBrowse_AddsPendingOnlyItem_UsesPendingDetailLoader(t *testing.T) {
 		DB:        mainDB,
 		RigHandle: "alice",
 		Mode:      "pr",
-		LoadPendingDetail: func(wantedID string, pending PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error) {
-			return commons.QueryFullDetailAsOf(forkDB, wantedID, pending.Branch)
+		LoadPendingItem: func(wantedID string, pending PendingItem) (*commons.WantedItem, error) {
+			return commons.QueryWantedDetailAsOf(forkDB, wantedID, pending.Branch)
 		},
 		ListPendingItems: func() (map[string][]PendingItem, error) {
 			return map[string][]PendingItem{

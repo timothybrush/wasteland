@@ -131,7 +131,7 @@ func (c *Client) BrowseContext(ctx context.Context, filter commons.BrowseFilter)
 		if best.Branch == "" {
 			continue
 		}
-		item, _, _, err := c.loadPendingDetailContext(overlayCtx, id, best)
+		item, err := c.loadPendingBrowseItemContext(overlayCtx, id, best)
 		if err != nil {
 			continue
 		}
@@ -291,6 +291,19 @@ func (c *Client) detailPRContext(ctx context.Context, wantedID string) (*DetailR
 	result.BranchActions = c.computeBranchActions(result)
 	result.UpstreamPRs = c.fetchUpstreamPRsContext(ctx, wantedID)
 	return result, nil
+}
+
+func (c *Client) loadPendingBrowseItemContext(ctx context.Context, wantedID string, pending PendingItem) (*commons.WantedItem, error) {
+	_, span := sdkTracer.Start(ctx, "sdk.pending.load_item")
+	defer span.End()
+	if c.LoadPendingItem != nil {
+		item, err := c.LoadPendingItem(wantedID, pending)
+		if err == nil {
+			return item, nil
+		}
+		span.RecordError(err)
+	}
+	return commons.QueryWantedDetailAsOf(c.db, wantedID, pending.Branch)
 }
 
 func (c *Client) loadPendingDetailContext(ctx context.Context, wantedID string, pending PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error) {

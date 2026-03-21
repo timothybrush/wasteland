@@ -298,7 +298,7 @@ func TestDetail_UsesStaleCacheOnTransientError(t *testing.T) {
 	srv.detailCache.mu.Unlock()
 
 	db.queryErrors = map[string]error{
-		"WHERE id='w-1'": errors.New("no such repository"),
+		"WHERE w.id='w-1'": errors.New("no such repository"),
 	}
 
 	var stale DetailResponse

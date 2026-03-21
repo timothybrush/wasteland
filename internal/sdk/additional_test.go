@@ -40,6 +40,7 @@ func TestWithRigHandleReturnsShallowCopy(t *testing.T) {
 		Signing:          true,
 		HopURI:           "hop://alice",
 		CloseUpstreamPR:  func(string) error { return nil },
+		LoadPendingItem:  func(string, PendingItem) (*commons.WantedItem, error) { return nil, nil },
 		ListPendingItems: pendingItems(nil),
 	})
 
@@ -53,11 +54,98 @@ func TestWithRigHandleReturnsShallowCopy(t *testing.T) {
 	if clone.Mode() != c.Mode() {
 		t.Fatalf("Mode() = %q, want %q", clone.Mode(), c.Mode())
 	}
-	if clone.db != c.db || clone.CloseUpstreamPR == nil || clone.ListPendingItems == nil {
+	if clone.db != c.db || clone.CloseUpstreamPR == nil || clone.LoadPendingItem == nil || clone.ListPendingItems == nil {
 		t.Fatal("WithRigHandle() should preserve DB and callbacks")
 	}
 	if c.RigHandle() != "alice" {
 		t.Fatalf("original RigHandle() = %q, want alice", c.RigHandle())
+	}
+}
+
+func TestDetail_UsesSingleJoinedQuery(t *testing.T) {
+	var calls int
+	db := &queryOnlyDB{
+		queryFunc: func(sql, ref string) (string, error) {
+			calls++
+			if ref != "" {
+				t.Fatalf("unexpected ref = %q", ref)
+			}
+			if strings.Contains(sql, "FROM completions") || strings.Contains(sql, "FROM stamps") {
+				t.Fatalf("unexpected separate detail query: %s", sql)
+			}
+			if !strings.Contains(sql, "LEFT JOIN completions") || !strings.Contains(sql, "LEFT JOIN stamps") {
+				t.Fatalf("expected joined detail query, got %s", sql)
+			}
+			return strings.Join([]string{
+				"id,title,description,project,type,priority,tags,posted_by,claimed_by,status,effort_level,created_at,updated_at,completion_id,completion_wanted_id,completed_by,evidence,completion_stamp_id,validated_by,stamp_record_id,stamp_author,stamp_subject,stamp_valence,stamp_severity,stamp_context_id,stamp_context_type,stamp_skill_tags,stamp_message",
+				`w-1,Fix hosted detail,Trace the detail path,hop,bug,1,"[""go"",""perf""]",alice,bob,in_review,medium,2026-03-20,2026-03-21,c-1,w-1,bob,https://example.com/proof,s-1,alice,s-1,alice,bob,"{""quality"":4,""reliability"":5}",medium,w-1,completion,"[""go"",""perf""]",Looks good`,
+				"",
+			}, "\n"), nil
+		},
+	}
+
+	c := New(ClientConfig{DB: db, RigHandle: "alice", Mode: "wild-west"})
+	result, err := c.Detail("w-1")
+	if err != nil {
+		t.Fatalf("Detail() error = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+	if result.Completion == nil || result.Completion.ID != "c-1" {
+		t.Fatalf("completion = %+v, want joined completion", result.Completion)
+	}
+	if result.Stamp == nil || result.Stamp.ID != "s-1" {
+		t.Fatalf("stamp = %+v, want joined stamp", result.Stamp)
+	}
+}
+
+func TestBrowse_BranchOnlyPendingUsesItemLoader(t *testing.T) {
+	db := newFakeDB()
+	var itemLoads, detailLoads int
+	c := New(ClientConfig{
+		DB:        db,
+		RigHandle: "alice",
+		Mode:      "pr",
+		LoadPendingItem: func(wantedID string, _ PendingItem) (*commons.WantedItem, error) {
+			itemLoads++
+			return &commons.WantedItem{
+				ID:          wantedID,
+				Title:       "Pending branch-only item",
+				Project:     "hop",
+				Type:        "docs",
+				Priority:    1,
+				PostedBy:    "alice",
+				Status:      "open",
+				EffortLevel: "small",
+			}, nil
+		},
+		LoadPendingDetail: func(string, PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error) {
+			detailLoads++
+			return nil, nil, nil, fmt.Errorf("should not be called")
+		},
+		ListPendingItems: pendingItems(map[string][]PendingItem{
+			"w-new": {{
+				RigHandle: "alice",
+				Status:    "open",
+				Branch:    "wl/alice/w-new",
+				ForkOwner: "alice",
+			}},
+		}),
+	})
+
+	result, err := c.Browse(commons.BrowseFilter{View: "mine", Priority: -1})
+	if err != nil {
+		t.Fatalf("Browse() error = %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].ID != "w-new" {
+		t.Fatalf("result.Items = %+v, want branch-only pending item", result.Items)
+	}
+	if itemLoads != 1 {
+		t.Fatalf("itemLoads = %d, want 1", itemLoads)
+	}
+	if detailLoads != 0 {
+		t.Fatalf("detailLoads = %d, want 0", detailLoads)
 	}
 }
 

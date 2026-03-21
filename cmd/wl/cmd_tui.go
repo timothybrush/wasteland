@@ -136,6 +136,7 @@ func runTUI(cmd *cobra.Command, _, stderr io.Writer) error {
 			c.Signing = signing
 			return store.Save(c)
 		},
+		LoadPendingItem:   pendingItemLoaderCallback(cfg),
 		LoadPendingDetail: pendingDetailLoaderCallback(cfg),
 		ListPendingItems:  listPendingItemsFromPRs(cfg),
 		BranchURL:         branchURLCallback(cfg),

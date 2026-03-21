@@ -430,10 +430,8 @@ func TestQueryFullDetailAsOf_LoadsCompletionAndStampForEffectiveState(t *testing
 	db := &operationsTestDB{
 		queryFunc: func(sql, _ string) (string, error) {
 			switch {
-			case strings.Contains(sql, "FROM completions"):
-				return "id,wanted_id,completed_by,evidence,stamp_id,validated_by\nc-1,w-1,alice,proof,s-1,bob\n", nil
-			case strings.Contains(sql, "FROM stamps"):
-				return "id,author,subject,valence,severity,context_id,context_type,skill_tags,message\ns-1,bob,alice,\"{\"\"quality\"\":4,\"\"reliability\"\":5}\",medium,c-1,completion,\"[\"\"go\"\"]\",solid work\n", nil
+			case strings.Contains(sql, "LEFT JOIN completions"):
+				return "id,title,description,project,type,priority,tags,posted_by,claimed_by,status,effort_level,created_at,updated_at,completion_id,completion_wanted_id,completed_by,evidence,completion_stamp_id,validated_by,stamp_record_id,stamp_author,stamp_subject,stamp_valence,stamp_severity,stamp_context_id,stamp_context_type,stamp_skill_tags,stamp_message\nw-1,Task,Details,gascity,bug,2,\"[\"\"go\"\"]\",alice,alice,completed,small,2026-03-01,2026-03-02,c-1,w-1,alice,proof,s-1,bob,s-1,bob,alice,\"{\"\"quality\"\":4,\"\"reliability\"\":5}\",medium,c-1,completion,\"[\"\"go\"\"]\",solid work\n", nil
 			default:
 				return "id,title,description,project,type,priority,tags,posted_by,claimed_by,status,effort_level,created_at,updated_at\nw-1,Task,Details,gascity,bug,2,\"[\"\"go\"\"]\",alice,alice,completed,small,2026-03-01,2026-03-02\n", nil
 			}
@@ -449,6 +447,30 @@ func TestQueryFullDetailAsOf_LoadsCompletionAndStampForEffectiveState(t *testing
 	}
 	if completion.ID != "c-1" || stamp.ID != "s-1" {
 		t.Fatalf("completion/stamp = %+v / %+v", completion, stamp)
+	}
+}
+
+func TestQueryFullDetailAsOf_IgnoresCompletionAndStampOutsideReviewStates(t *testing.T) {
+	t.Parallel()
+
+	db := &operationsTestDB{
+		queryFunc: func(sql, _ string) (string, error) {
+			if !strings.Contains(sql, "LEFT JOIN completions") {
+				t.Fatalf("unexpected query = %q", sql)
+			}
+			return "id,title,description,project,type,priority,tags,posted_by,claimed_by,status,effort_level,created_at,updated_at,completion_id,completion_wanted_id,completed_by,evidence,completion_stamp_id,validated_by,stamp_record_id,stamp_author,stamp_subject,stamp_valence,stamp_severity,stamp_context_id,stamp_context_type,stamp_skill_tags,stamp_message\nw-1,Task,Details,gascity,bug,2,\"[\"\"go\"\"]\",alice,alice,open,small,2026-03-01,2026-03-02,c-1,w-1,alice,proof,s-1,bob,s-1,bob,alice,\"{\"\"quality\"\":4,\"\"reliability\"\":5}\",medium,c-1,completion,\"[\"\"go\"\"]\",solid work\n", nil
+		},
+	}
+
+	item, completion, stamp, err := QueryFullDetailAsOf(db, "w-1", "wl/alice/w-1")
+	if err != nil {
+		t.Fatalf("QueryFullDetailAsOf() error = %v", err)
+	}
+	if item == nil || item.Status != "open" {
+		t.Fatalf("item = %+v, want open item", item)
+	}
+	if completion != nil || stamp != nil {
+		t.Fatalf("completion/stamp = %+v / %+v, want nil for open item", completion, stamp)
 	}
 }
 

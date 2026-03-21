@@ -277,6 +277,7 @@ func runServe(cmd *cobra.Command, stdout, stderr io.Writer) error {
 		ClosePR: func(branch string) error {
 			return closePRForBranch(cfg, branch)
 		},
+		LoadPendingItem:   pendingItemLoaderCallback(cfg),
 		LoadPendingDetail: pendingDetailLoaderCallback(cfg),
 		ListPendingItems:  listPendingItemsFromPRs(cfg),
 		BranchURL:         branchURLCallback(cfg),
@@ -405,6 +406,7 @@ func runServeHosted(cmd *cobra.Command, stdout, _ io.Writer) error {
 		DB:                publicDB,
 		Upstream:          hostedPublicUpstream,
 		Mode:              federation.ModePR,
+		LoadPendingItem:   pendingItemLoader(hostedPublicUpstreamOrg, hostedPublicUpstreamDB, federation.ModePR, ""),
 		LoadPendingDetail: pendingDetailLoader(hostedPublicUpstreamOrg, hostedPublicUpstreamDB, federation.ModePR, ""),
 		ListPendingItems:  pendingCache.Get,
 	})

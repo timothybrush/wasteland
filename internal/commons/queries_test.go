@@ -16,6 +16,7 @@ type queryTestDB struct {
 	branchStamps      map[string]map[string]*Stamp
 	branchList        []string
 	branchListErr     error
+	queryLog          []string
 }
 
 func newQueryTestDB() *queryTestDB {
@@ -30,7 +31,10 @@ func newQueryTestDB() *queryTestDB {
 }
 
 func (db *queryTestDB) Query(sql, ref string) (string, error) {
+	db.queryLog = append(db.queryLog, sql)
 	switch {
+	case strings.Contains(sql, "LEFT JOIN completions") && strings.Contains(sql, "FROM wanted w"):
+		return db.queryFullDetailJoined(sql, ref), nil
 	case strings.Contains(sql, "FROM wanted") && strings.Contains(sql, "WHERE id"):
 		return db.queryWantedByID(sql, ref), nil
 	case strings.Contains(sql, "FROM wanted"):
@@ -160,6 +164,72 @@ func (db *queryTestDB) queryCompletion(sql, ref string) string {
 			csvCell(record.StampID),
 			csvCell(record.ValidatedBy),
 		}, ",") + "\n"
+}
+
+func (db *queryTestDB) queryFullDetailJoined(sql, ref string) string {
+	item := db.resolveItem(extractEqValue(sql, "w.id"), ref)
+	header := "id,title,description,project,type,priority,tags,posted_by,claimed_by,status,effort_level,created_at,updated_at,completion_id,completion_wanted_id,completed_by,evidence,completion_stamp_id,validated_by,stamp_record_id,stamp_author,stamp_subject,stamp_valence,stamp_severity,stamp_context_id,stamp_context_type,stamp_skill_tags,stamp_message\n"
+	if item == nil {
+		return header
+	}
+
+	completion := db.resolveCompletion(item.ID, ref)
+	var stamp *Stamp
+	if completion != nil && completion.StampID != "" {
+		stamp = db.resolveStamp(completion.StampID, ref)
+	}
+
+	row := []string{
+		item.ID,
+		csvCell(item.Title),
+		csvCell(item.Description),
+		csvCell(item.Project),
+		csvCell(item.Type),
+		itoa(item.Priority),
+		csvCell(tagsJSON(item.Tags)),
+		csvCell(item.PostedBy),
+		csvCell(item.ClaimedBy),
+		item.Status,
+		csvCell(item.EffortLevel),
+		csvCell(item.CreatedAt),
+		csvCell(item.UpdatedAt),
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+	}
+	if completion != nil {
+		row[13] = completion.ID
+		row[14] = completion.WantedID
+		row[15] = csvCell(completion.CompletedBy)
+		row[16] = csvCell(completion.Evidence)
+		row[17] = csvCell(completion.StampID)
+		row[18] = csvCell(completion.ValidatedBy)
+	}
+	if stamp != nil {
+		row[19] = stamp.ID
+		row[20] = csvCell(stamp.Author)
+		row[21] = csvCell(stamp.Subject)
+		row[22] = csvCell(stampValenceJSON(stamp))
+		row[23] = csvCell(stamp.Severity)
+		row[24] = csvCell(stamp.ContextID)
+		row[25] = csvCell(stamp.ContextType)
+		row[26] = csvCell(tagsJSON(stamp.SkillTags))
+		row[27] = csvCell(stamp.Message)
+	}
+
+	return header + strings.Join(row, ",") + "\n"
 }
 
 func (db *queryTestDB) queryStamp(sql, ref string) string {
@@ -585,6 +655,79 @@ func TestResolveItemState_UsesBranchCompletionAndStamp(t *testing.T) {
 	}
 	if state.Stamp.Quality != 4 || state.Stamp.Reliability != 5 {
 		t.Fatalf("Stamp valence = %+v, want quality=4 reliability=5", state.Stamp)
+	}
+}
+
+func TestResolveItemState_UsesJoinedQueriesWithoutSeparateCompletionOrStampReads(t *testing.T) {
+	t.Parallel()
+
+	db := newQueryTestDB()
+	db.items["w-1"] = &WantedItem{
+		ID:          "w-1",
+		Title:       "Branch detail",
+		Status:      "open",
+		PostedBy:    "alice",
+		EffortLevel: "small",
+	}
+	branch := BranchName("alice", "w-1")
+	db.branchList = []string{branch}
+	db.branchItems[branch] = map[string]*WantedItem{
+		"w-1": {
+			ID:          "w-1",
+			Title:       "Branch detail",
+			Status:      "in_review",
+			PostedBy:    "alice",
+			ClaimedBy:   "alice",
+			EffortLevel: "small",
+		},
+	}
+	db.branchCompletions[branch] = map[string]*CompletionRecord{
+		"w-1": {
+			ID:          "c-1",
+			WantedID:    "w-1",
+			CompletedBy: "alice",
+			Evidence:    "https://example.com/proof",
+			StampID:     "s-1",
+		},
+	}
+	db.branchStamps[branch] = map[string]*Stamp{
+		"s-1": {
+			ID:          "s-1",
+			Author:      "bob",
+			Subject:     "alice",
+			Quality:     4,
+			Reliability: 5,
+			Severity:    "medium",
+		},
+	}
+
+	state, err := ResolveItemState(db, "alice", "w-1")
+	if err != nil {
+		t.Fatalf("ResolveItemState() error = %v", err)
+	}
+	if state.Branch == nil || state.Completion == nil || state.Stamp == nil {
+		t.Fatalf("state = %+v, want branch detail with completion and stamp", state)
+	}
+
+	var joinedQueries, completionQueries, stampQueries int
+	for _, sql := range db.queryLog {
+		switch {
+		case strings.Contains(sql, "LEFT JOIN completions"):
+			joinedQueries++
+		case strings.Contains(sql, "FROM completions"):
+			completionQueries++
+		case strings.Contains(sql, "FROM stamps"):
+			stampQueries++
+		}
+	}
+	if joinedQueries != 2 {
+		t.Fatalf("joinedQueries = %d, want 2 (main + branch)", joinedQueries)
+	}
+	if completionQueries != 0 {
+		t.Fatalf("completionQueries = %d, want 0", completionQueries)
+	}
+	if stampQueries != 0 {
+		t.Fatalf("stampQueries = %d, want 0", stampQueries)
 	}
 }
 

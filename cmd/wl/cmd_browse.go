@@ -211,6 +211,7 @@ func newBrowseClientConfig(cfg *federation.Config, db commons.DB) sdk.ClientConf
 		Mode:      cfg.ResolveMode(),
 	}
 	if cfg.ResolveMode() == federation.ModePR {
+		clientCfg.LoadPendingItem = pendingItemLoaderCallback(cfg)
 		clientCfg.LoadPendingDetail = pendingDetailLoaderCallback(cfg)
 		clientCfg.ListPendingItems = listPendingItemsFromPRs(cfg)
 	}

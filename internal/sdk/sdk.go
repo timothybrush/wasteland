@@ -25,6 +25,7 @@ type ClientConfig struct {
 	CheckPR           func(branch string) string
 	ClosePR           func(branch string) error // close the PR for the given branch
 	LoadDiff          func(branch string) (string, error)
+	LoadPendingItem   func(wantedID string, pending PendingItem) (*commons.WantedItem, error)
 	LoadPendingDetail func(wantedID string, pending PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error)
 	SaveConfig        func(mode string, signing bool) error
 	ListPendingItems  func() (map[string][]PendingItem, error) // returns wanted IDs with pending upstream PR state
@@ -51,6 +52,9 @@ type Client struct {
 	ClosePR func(branch string) error
 	// LoadDiff returns a diff for the given branch. Nil disables the feature.
 	LoadDiff func(branch string) (string, error)
+	// LoadPendingItem loads only the wanted row for a pending upstream item from the source branch's fork.
+	// Nil falls back to reading the branch from the client's configured DB.
+	LoadPendingItem func(wantedID string, pending PendingItem) (*commons.WantedItem, error)
 	// LoadPendingDetail loads detail for a pending upstream item from the source branch's fork.
 	// Nil falls back to reading the branch from the client's configured DB.
 	LoadPendingDetail func(wantedID string, pending PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error)
@@ -78,6 +82,7 @@ func New(cfg ClientConfig) *Client {
 		CheckPR:           cfg.CheckPR,
 		ClosePR:           cfg.ClosePR,
 		LoadDiff:          cfg.LoadDiff,
+		LoadPendingItem:   cfg.LoadPendingItem,
 		LoadPendingDetail: cfg.LoadPendingDetail,
 		SaveConfig:        cfg.SaveConfig,
 		ListPendingItems:  cfg.ListPendingItems,
@@ -112,6 +117,7 @@ func (c *Client) WithRigHandle(handle string) *Client {
 		CheckPR:           c.CheckPR,
 		ClosePR:           c.ClosePR,
 		LoadDiff:          c.LoadDiff,
+		LoadPendingItem:   c.LoadPendingItem,
 		LoadPendingDetail: c.LoadPendingDetail,
 		SaveConfig:        c.SaveConfig,
 		ListPendingItems:  c.ListPendingItems,

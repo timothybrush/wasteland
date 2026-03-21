@@ -432,6 +432,9 @@ func TestHostedPublic_ReadsPendingOnlyForkItem(t *testing.T) {
 	publicClient := sdk.New(sdk.ClientConfig{
 		DB:   mainDB,
 		Mode: "pr",
+		LoadPendingItem: func(wantedID string, pending sdk.PendingItem) (*commons.WantedItem, error) {
+			return commons.QueryWantedDetailAsOf(forkDB, wantedID, pending.Branch)
+		},
 		LoadPendingDetail: func(wantedID string, pending sdk.PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error) {
 			return commons.QueryFullDetailAsOf(forkDB, wantedID, pending.Branch)
 		},
@@ -515,6 +518,9 @@ func TestBrowse_DefaultViewTreatsOmittedViewAsMine(t *testing.T) {
 		DB:        mainDB,
 		RigHandle: "alice",
 		Mode:      "pr",
+		LoadPendingItem: func(wantedID string, pending sdk.PendingItem) (*commons.WantedItem, error) {
+			return commons.QueryWantedDetailAsOf(forkDB, wantedID, pending.Branch)
+		},
 		LoadPendingDetail: func(wantedID string, pending sdk.PendingItem) (*commons.WantedItem, *commons.CompletionRecord, *commons.Stamp, error) {
 			return commons.QueryFullDetailAsOf(forkDB, wantedID, pending.Branch)
 		},

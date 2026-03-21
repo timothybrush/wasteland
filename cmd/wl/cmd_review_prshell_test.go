@@ -273,10 +273,10 @@ func TestCreatePRForBranchRemote_DoltHubLifecycle(t *testing.T) {
 			if ref != "wl/alice/w-1" {
 				t.Fatalf("ref = %q", ref)
 			}
-			if !strings.Contains(query, "FROM wanted WHERE id='w-1'") {
+			if !strings.Contains(query, "WHERE w.id='w-1'") {
 				t.Fatalf("query = %q", query)
 			}
-			return "id,title,description,project,type,priority,tags,posted_by,claimed_by,status,effort_level,created_at,updated_at\nw-1,Fix auth,,,,2,,alice,,claimed,medium,,\n", nil
+			return "id,title,description,project,type,priority,tags,posted_by,claimed_by,status,effort_level,created_at,updated_at,completion_id,completion_wanted_id,completed_by,evidence,completion_stamp_id,validated_by,stamp_record_id,stamp_author,stamp_subject,stamp_valence,stamp_severity,stamp_context_id,stamp_context_type,stamp_skill_tags,stamp_message\nw-1,Fix auth,,,,2,,alice,,claimed,medium,,,,,,,,,,,,,,,\n", nil
 		},
 	}
 

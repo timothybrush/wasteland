@@ -577,26 +577,7 @@ func QueryFullDetailAsOf(db DB, wantedID, ref string) (*WantedItem, *CompletionR
 }
 
 func queryFullDetailRef(db DB, wantedID, ref string) (*WantedItem, *CompletionRecord, *Stamp, error) {
-	item, err := queryWantedDetailRef(db, wantedID, ref)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	var completion *CompletionRecord
-	var stamp *Stamp
-
-	if item.Status == "in_review" || item.Status == "completed" {
-		if c, err := queryCompletionRef(db, wantedID, ref); err == nil {
-			completion = c
-			if c.StampID != "" {
-				if s, err := queryStampRef(db, c.StampID, ref); err == nil {
-					stamp = s
-				}
-			}
-		}
-	}
-
-	return item, completion, stamp, nil
+	return queryFullDetailJoinedRef(db, wantedID, ref)
 }
 
 // ItemState captures the complete picture of an item across main and branch.
@@ -642,34 +623,27 @@ func ResolveItemState(db DB, rigHandle, wantedID string) (*ItemState, error) {
 	state := &ItemState{WantedID: wantedID}
 
 	// Main state.
-	if item, err := QueryWantedDetail(db, wantedID); err == nil {
-		state.Main = item
+	mainItem, mainCompletion, mainStamp, err := QueryFullDetail(db, wantedID)
+	if err == nil {
+		state.Main = mainItem
 	}
 
 	// Branch state (if exists).
 	branch := FindBranchForItem(db, rigHandle, wantedID)
 	if branch != "" {
 		state.BranchName = branch
-		if item, err := QueryWantedDetailAsOf(db, wantedID, branch); err == nil {
+		if item, completion, stamp, err := QueryFullDetailAsOf(db, wantedID, branch); err == nil {
 			state.Branch = item
+			state.Completion = completion
+			state.Stamp = stamp
+			return state, nil
 		}
 	}
 
-	// Completion + stamp from effective source.
-	effective := state.Effective()
-	if effective != nil && (effective.Status == "in_review" || effective.Status == "completed") {
-		ref := ""
-		if branch != "" {
-			ref = branch
-		}
-		if c, err := queryCompletionRef(db, wantedID, ref); err == nil {
-			state.Completion = c
-			if c.StampID != "" {
-				if s, err := queryStampRef(db, c.StampID, ref); err == nil {
-					state.Stamp = s
-				}
-			}
-		}
+	// Completion + stamp from main when no effective branch state exists.
+	if state.Main != nil && (state.Main.Status == "in_review" || state.Main.Status == "completed") {
+		state.Completion = mainCompletion
+		state.Stamp = mainStamp
 	}
 
 	return state, nil
