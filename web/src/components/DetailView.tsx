@@ -21,6 +21,7 @@ import {
 } from "../api/client";
 import type { DetailResponse, MutationResponse } from "../api/types";
 import { useWasteland } from "../context/WastelandContext";
+import { AcceptDialog, type AcceptStampInput } from "./AcceptDialog";
 import { ActionButton } from "./ActionButton";
 import { ConfirmDialog } from "./ConfirmDialog";
 import styles from "./DetailView.module.css";
@@ -35,7 +36,6 @@ const actionStatusMap: Record<string, string> = {
   claim: "claimed",
   unclaim: "open",
   close: "completed",
-  accept: "completed",
 };
 
 export function DetailView() {
@@ -52,6 +52,12 @@ export function DetailView() {
   const [showDoneForm, setShowDoneForm] = useState(false);
   const [showEditForm, setShowEditForm] = useState(false);
   const [doneSubmitting, setDoneSubmitting] = useState(false);
+  const [acceptSubmitting, setAcceptSubmitting] = useState(false);
+  const [acceptTarget, setAcceptTarget] = useState<{
+    isUpstream: boolean;
+    rigHandle?: string;
+    label: string;
+  } | null>(null);
 
   const [optimisticStatus, setOptimisticStatus] = useOptimistic(
     data?.item?.status ?? "",
@@ -107,9 +113,6 @@ export function DetailView() {
           toast.success("Item deleted");
           navigate("/");
           return;
-        case "accept":
-          result = await accept(id);
-          break;
         case "submit_pr":
           if (data.branch) {
             await submitPR(data.branch);
@@ -174,6 +177,35 @@ export function DetailView() {
     }
   };
 
+  const handleAcceptSubmit = async (stamp: AcceptStampInput) => {
+    if (!id || !acceptTarget) return;
+    setAcceptSubmitting(true);
+    try {
+      const result = acceptTarget.isUpstream
+        ? await acceptUpstream(id, acceptTarget.rigHandle!, stamp)
+        : await accept(id, stamp);
+      toast.success(
+        acceptTarget.isUpstream ? `Accepted ${acceptTarget.rigHandle}'s submission` : "Accepted submission",
+      );
+      setAcceptTarget(null);
+      if (result?.detail) {
+        setData(result.detail);
+      } else {
+        await load();
+      }
+    } catch (e) {
+      if (isConflictError(e)) {
+        setAcceptTarget(null);
+        toast.error("This item was already claimed or changed by someone else");
+        await load();
+        return;
+      }
+      toast.error(e instanceof Error ? e.message : "Failed to accept");
+    } finally {
+      setAcceptSubmitting(false);
+    }
+  };
+
   const handleLoadDiff = async () => {
     if (!data?.branch) return;
     setDiffLoading(true);
@@ -190,6 +222,10 @@ export function DetailView() {
   const onActionClick = async (action: string) => {
     if (action === "done") {
       setShowDoneForm(true);
+      return;
+    }
+    if (action === "accept") {
+      setAcceptTarget({ isUpstream: false, label: "this submission" });
       return;
     }
     if (destructiveActions.has(action)) {
@@ -306,7 +342,7 @@ export function DetailView() {
         <Section title={upstream_prs.length === 1 ? "Submission" : "Competing Submissions"}>
           <div className={styles.sectionContent}>
             {upstream_prs.map((pr, i) => {
-              const isUpstream = !!pr.pr_url || !!pr.branch_url;
+              const isUpstream = pr.is_upstream;
               return (
                 <div key={i} className={styles.sectionText}>
                   <span className={styles.highlightBrass}>{pr.rig_handle}</span>
@@ -336,17 +372,11 @@ export function DetailView() {
                         <ActionButton
                           action="accept"
                           onAction={async () => {
-                            try {
-                              const result = isUpstream ? await acceptUpstream(id!, pr.rig_handle) : await accept(id!);
-                              toast.success(`Accepted ${pr.rig_handle}'s submission`);
-                              if (result?.detail) {
-                                setData(result.detail);
-                              } else {
-                                await load();
-                              }
-                            } catch (e) {
-                              toast.error(e instanceof Error ? e.message : "Failed to accept");
-                            }
+                            setAcceptTarget({
+                              isUpstream,
+                              rigHandle: pr.rig_handle,
+                              label: `${pr.rig_handle}'s submission`,
+                            });
                           }}
                         />
                       )}
@@ -516,6 +546,19 @@ export function DetailView() {
             setConfirm(null);
             await handleAction(action);
           }}
+        />
+      )}
+
+      {acceptTarget && (
+        <AcceptDialog
+          label={acceptTarget.label}
+          submitting={acceptSubmitting}
+          onCancel={() => {
+            if (!acceptSubmitting) {
+              setAcceptTarget(null);
+            }
+          }}
+          onSubmit={handleAcceptSubmit}
         />
       )}
     </div>

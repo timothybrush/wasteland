@@ -63,6 +63,7 @@ export interface Stamp {
 }
 
 export interface UpstreamPR {
+  is_upstream: boolean;
   rig_handle: string;
   status: string;
   claimed_by?: string;

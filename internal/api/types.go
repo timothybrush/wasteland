@@ -80,6 +80,7 @@ type StampJSON struct {
 
 // UpstreamPRJSON is the JSON representation of a pending upstream PR.
 type UpstreamPRJSON struct {
+	IsUpstream  bool   `json:"is_upstream"`
 	RigHandle   string `json:"rig_handle"`
 	Status      string `json:"status"`
 	ClaimedBy   string `json:"claimed_by,omitempty"`
@@ -338,6 +339,7 @@ func toDetailResponse(d *sdk.DetailResult, mode string) *DetailResponse {
 	// the first entry so the poster sees all submissions in one place.
 	if d.Item != nil && d.Item.Status == "in_review" && d.Completion != nil {
 		upstreamPRs = append(upstreamPRs, UpstreamPRJSON{
+			IsUpstream:  false,
 			RigHandle:   d.Completion.CompletedBy,
 			Status:      "in_review",
 			CompletedBy: d.Completion.CompletedBy,
@@ -351,6 +353,7 @@ func toDetailResponse(d *sdk.DetailResult, mode string) *DetailResponse {
 			delta = d.Item.Status + " → " + p.Status
 		}
 		upstreamPRs = append(upstreamPRs, UpstreamPRJSON{
+			IsUpstream:  true,
 			RigHandle:   p.RigHandle,
 			Status:      p.Status,
 			ClaimedBy:   p.ClaimedBy,

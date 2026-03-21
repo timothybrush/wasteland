@@ -119,6 +119,7 @@ describe("DetailView", () => {
         actions: ["accept", "reject", "close"],
         upstream_prs: [
           {
+            is_upstream: true,
             rig_handle: "charlie",
             status: "in_review",
             evidence: "https://github.com/org/repo/pull/1",
@@ -142,6 +143,7 @@ describe("DetailView", () => {
         actions: ["accept", "reject", "close"],
         upstream_prs: [
           {
+            is_upstream: true,
             rig_handle: "charlie",
             status: "in_review",
             evidence: "https://github.com/org/repo/pull/1",
@@ -165,6 +167,7 @@ describe("DetailView", () => {
         actions: [],
         upstream_prs: [
           {
+            is_upstream: true,
             rig_handle: "charlie",
             status: "in_review",
             evidence: "https://github.com/org/repo/pull/1",
@@ -371,7 +374,7 @@ describe("DetailView", () => {
       return makeDetailResponse({
         item: makeItem({ posted_by: "alice", status: "claimed" }),
         actions: ["reject"],
-        upstream_prs: [{ rig_handle: "bob", status: "claimed" }],
+        upstream_prs: [{ is_upstream: false, rig_handle: "bob", status: "claimed" }],
       });
     });
     cleanupFetch = mockFetch(fetchFn);
@@ -394,6 +397,7 @@ describe("DetailView", () => {
         actions: ["accept", "reject", "close"],
         upstream_prs: [
           {
+            is_upstream: true,
             rig_handle: "charlie",
             status: "claimed",
             pr_url: "https://www.dolthub.com/repositories/org/db/pulls/1",
@@ -421,10 +425,10 @@ describe("DetailView", () => {
         actions: ["accept", "reject", "close"],
         upstream_prs: [
           {
+            is_upstream: true,
             rig_handle: "charlie",
             status: "in_review",
             evidence: "https://github.com/org/repo/pull/1",
-            pr_url: "https://www.dolthub.com/repositories/org/db/pulls/1",
           },
         ],
       });
@@ -434,11 +438,123 @@ describe("DetailView", () => {
 
     await waitFor(() => expect(screen.getByRole("button", { name: "accept" })).toBeInTheDocument());
     await userEvent.click(screen.getByRole("button", { name: "accept" }));
+    await waitFor(() => expect(screen.getByRole("dialog", { name: "Accept Submission" })).toBeInTheDocument());
+    await userEvent.selectOptions(screen.getByLabelText("Quality"), "4");
+    await userEvent.selectOptions(screen.getByLabelText("Reliability"), "3");
+    await userEvent.selectOptions(screen.getByLabelText("Severity"), "branch");
+    await userEvent.type(screen.getByLabelText("Message"), "Solid review");
+    await userEvent.click(screen.getByRole("button", { name: "Accept" }));
     await waitFor(() => {
       const acceptCalls = fetchFn.mock.calls.filter(([u]) => u.endsWith("/accept-upstream"));
       expect(acceptCalls.length).toBeGreaterThan(0);
-      expect(acceptCalls[0]?.[1]?.body).toBe(JSON.stringify({ rig_handle: "charlie" }));
+      expect(acceptCalls[0]?.[1]?.body).toBe(
+        JSON.stringify({
+          rig_handle: "charlie",
+          quality: 4,
+          reliability: 3,
+          severity: "branch",
+          message: "Solid review",
+        }),
+      );
     });
+  });
+
+  it("opens an accept dialog for mainline acceptance and lets reliability default to quality", async () => {
+    setActiveUpstream("hop/wl-commons");
+    const fetchFn = vi.fn((url: string, init?: RequestInit) => {
+      if (url.endsWith("/accept") && init?.method === "POST") {
+        return { detail: makeDetailResponse({ actions: [] }) };
+      }
+      return makeDetailResponse({
+        item: makeItem({ status: "in_review", claimed_by: "bob" }),
+        actions: ["accept"],
+      });
+    });
+    cleanupFetch = mockFetch(fetchFn);
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "accept" })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "accept" }));
+    expect(screen.getByRole("dialog", { name: "Accept Submission" })).toBeInTheDocument();
+    expect(fetchFn.mock.calls.filter(([u]) => u.endsWith("/accept"))).toHaveLength(0);
+
+    await userEvent.selectOptions(screen.getByLabelText("Quality"), "5");
+    await userEvent.click(screen.getByRole("button", { name: "Accept" }));
+
+    await waitFor(() => {
+      const acceptCalls = fetchFn.mock.calls.filter(([u]) => u.endsWith("/accept"));
+      expect(acceptCalls.length).toBeGreaterThan(0);
+      expect(acceptCalls[0]?.[1]?.body).toBe(
+        JSON.stringify({
+          quality: 5,
+          severity: "leaf",
+        }),
+      );
+    });
+  });
+
+  it("reloads detail after a conflicting mainline accept", async () => {
+    setActiveUpstream("hop/wl-commons");
+    let detailCalls = 0;
+    const fetchFn = vi.fn((url: string, init?: RequestInit) => {
+      if (url.endsWith("/accept") && init?.method === "POST") {
+        return new Response(JSON.stringify({ error: "already completed" }), { status: 409 });
+      }
+      detailCalls += 1;
+      return makeDetailResponse({
+        item: makeItem({ status: detailCalls > 1 ? "completed" : "in_review" }),
+        actions: detailCalls > 1 ? [] : ["accept"],
+      });
+    });
+    cleanupFetch = mockFetch(fetchFn);
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "accept" })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "accept" }));
+    await userEvent.click(screen.getByRole("button", { name: "Accept" }));
+
+    await waitFor(() => expect(detailCalls).toBe(2));
+    expect(mocked.toastError).toHaveBeenCalledWith("This item was already claimed or changed by someone else");
+    expect(screen.queryByRole("dialog", { name: "Accept Submission" })).not.toBeInTheDocument();
+    expect(screen.getByText("completed")).toBeInTheDocument();
+  });
+
+  it("reloads detail after a conflicting upstream accept", async () => {
+    setActiveUpstream("hop/wl-commons");
+    let detailCalls = 0;
+    const fetchFn = vi.fn((url: string, init?: RequestInit) => {
+      if (url.endsWith("/accept-upstream") && init?.method === "POST") {
+        return new Response(JSON.stringify({ error: "already completed" }), { status: 409 });
+      }
+      detailCalls += 1;
+      return makeDetailResponse({
+        item: makeItem({ posted_by: "alice", status: detailCalls > 1 ? "completed" : "claimed" }),
+        actions: detailCalls > 1 ? [] : ["accept", "reject", "close"],
+        upstream_prs:
+          detailCalls > 1
+            ? []
+            : [
+                {
+                  is_upstream: true,
+                  rig_handle: "charlie",
+                  status: "in_review",
+                  evidence: "https://github.com/org/repo/pull/1",
+                  pr_url: "https://www.dolthub.com/repositories/org/db/pulls/1",
+                },
+              ],
+      });
+    });
+    cleanupFetch = mockFetch(fetchFn);
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "accept" })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "accept" }));
+    await userEvent.click(screen.getByRole("button", { name: "Accept" }));
+
+    await waitFor(() => expect(detailCalls).toBe(2));
+    expect(mocked.toastError).toHaveBeenCalledWith("This item was already claimed or changed by someone else");
+    expect(screen.queryByRole("dialog", { name: "Accept Submission" })).not.toBeInTheDocument();
+    expect(screen.getByText("completed")).toBeInTheDocument();
   });
 
   it("closes upstream submissions via the upstream endpoint", async () => {
@@ -453,6 +569,7 @@ describe("DetailView", () => {
         actions: ["accept", "reject", "close"],
         upstream_prs: [
           {
+            is_upstream: true,
             rig_handle: "charlie",
             status: "in_review",
             evidence: "https://github.com/org/repo/pull/1",

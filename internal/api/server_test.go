@@ -410,6 +410,43 @@ func TestDetail(t *testing.T) {
 	}
 }
 
+func TestDetail_UpstreamSubmissionWithoutURLs_IsFlaggedExplicitly(t *testing.T) {
+	db := newFakeDB()
+	db.items["w-1"] = &fakeItem{id: "w-1", title: "Fix bug", status: "in_review", priority: 1, postedBy: "alice", effortLevel: "medium"}
+	db.completions["w-1"] = "c-1"
+
+	client := sdk.New(sdk.ClientConfig{
+		DB:        db,
+		RigHandle: "alice",
+		Mode:      "wild-west",
+		ListPendingItems: func() (map[string][]sdk.PendingItem, error) {
+			return map[string][]sdk.PendingItem{
+				"w-1": {{
+					RigHandle:   "charlie",
+					Status:      "in_review",
+					CompletedBy: "charlie",
+					Evidence:    "https://example.com/proof",
+				}},
+			}, nil
+		},
+	})
+
+	ts := httptest.NewServer(New(client))
+	defer ts.Close()
+
+	var resp DetailResponse
+	r := getJSON(t, ts, "/api/wanted/w-1", &resp)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", r.StatusCode)
+	}
+	if len(resp.UpstreamPRs) != 1 {
+		t.Fatalf("expected 1 submission, got %+v", resp.UpstreamPRs)
+	}
+	if !resp.UpstreamPRs[0].IsUpstream {
+		t.Fatalf("upstream submission should be flagged explicitly even without URLs: %+v", resp.UpstreamPRs[0])
+	}
+}
+
 func TestHostedPublic_ReadsPendingOnlyForkItem(t *testing.T) {
 	mainDB := newFakeDB()
 	forkDB := newFakeDB()
