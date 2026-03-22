@@ -104,7 +104,7 @@ $(GOLANGCI_LINT):
 setup: install-tools
 	@command -v bun >/dev/null 2>&1 || { echo "Installing bun..."; curl -fsSL https://bun.sh/install | bash; }
 	cd web && bun install
-	ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
+	git config core.hooksPath .githooks
 	@echo "Done. Tools installed, pre-commit hook active."
 
 ## web-check: typecheck + lint + test web frontend
