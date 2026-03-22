@@ -1,5 +1,8 @@
 version: "2"
 
+severity:
+  default: error
+
 formatters:
   enable:
     - gofumpt
