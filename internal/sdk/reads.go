@@ -244,7 +244,19 @@ func matchesPendingBrowseFilter(item *commons.WantedItem, status, claimedBy stri
 	if f.ClaimedBy != "" && claimedBy != f.ClaimedBy {
 		return false
 	}
-	if f.Search != "" && !strings.Contains(strings.ToLower(item.Title), strings.ToLower(f.Search)) {
+	if f.Search != "" {
+		s := strings.ToLower(f.Search)
+		if strings.Contains(strings.ToLower(item.Title), s) {
+			return true
+		}
+		if strings.Contains(strings.ToLower(item.Description), s) {
+			return true
+		}
+		for _, tag := range item.Tags {
+			if strings.Contains(strings.ToLower(tag), s) {
+				return true
+			}
+		}
 		return false
 	}
 	return true

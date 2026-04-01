@@ -34,7 +34,7 @@ type browseModel struct {
 
 func newBrowseModel() browseModel {
 	ti := textinput.New()
-	ti.Placeholder = "search title..."
+	ti.Placeholder = "search title, description, tags..."
 	ti.CharLimit = 64
 
 	pi := textinput.New()

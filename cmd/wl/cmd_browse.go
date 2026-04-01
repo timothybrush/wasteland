@@ -93,7 +93,7 @@ EXAMPLES:
 	cmd.Flags().BoolVar(&ephemeral, "ephemeral", false, "Clone upstream to temp dir instead of querying local (slow)")
 	cmd.Flags().StringVar(&postedBy, "posted-by", "", "Filter by poster's rig handle")
 	cmd.Flags().StringVar(&claimedBy, "claimed-by", "", "Filter by claimer's rig handle")
-	cmd.Flags().StringVar(&search, "search", "", "Search in title")
+	cmd.Flags().StringVar(&search, "search", "", "Search in title, description, and tags")
 	cmd.Flags().StringVar(&view, "view", "", "Branch view: mine (default), all, or upstream")
 	_ = cmd.RegisterFlagCompletionFunc("project", completeProjectNames)
 	_ = cmd.RegisterFlagCompletionFunc("status", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {

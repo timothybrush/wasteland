@@ -102,7 +102,10 @@ func BuildBrowseQuery(f BrowseFilter) string {
 		}
 	}
 	if f.Search != "" {
-		conditions = append(conditions, fmt.Sprintf("title LIKE '%%%s%%'", EscapeLIKE(f.Search)))
+		escaped := EscapeLIKE(f.Search)
+		conditions = append(conditions, fmt.Sprintf(
+			"(title LIKE '%%%s%%' OR COALESCE(description,'') LIKE '%%%s%%' OR COALESCE(tags,'') LIKE '%%%s%%')",
+			escaped, escaped, escaped))
 	}
 
 	cols := "id, title, COALESCE(project,'') as project, COALESCE(type,'') as type, priority, COALESCE(posted_by,'') as posted_by, COALESCE(claimed_by,'') as claimed_by, status, COALESCE(effort_level,'medium') as effort_level"
@@ -318,7 +321,19 @@ func matchesBrowseFilter(item *WantedItem, f BrowseFilter) bool {
 	if f.ClaimedBy != "" && item.ClaimedBy != f.ClaimedBy {
 		return false
 	}
-	if f.Search != "" && !strings.Contains(strings.ToLower(item.Title), strings.ToLower(f.Search)) {
+	if f.Search != "" {
+		s := strings.ToLower(f.Search)
+		if strings.Contains(strings.ToLower(item.Title), s) {
+			return true
+		}
+		if strings.Contains(strings.ToLower(item.Description), s) {
+			return true
+		}
+		for _, tag := range item.Tags {
+			if strings.Contains(strings.ToLower(tag), s) {
+				return true
+			}
+		}
 		return false
 	}
 	return true
