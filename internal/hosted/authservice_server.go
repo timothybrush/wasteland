@@ -554,6 +554,7 @@ func (s *AuthServiceServer) AuthMiddleware(next http.Handler) http.Handler {
 			Upstream: upstream,
 			Viewer:   workspace.RigHandle(),
 		})
+		ctx = withConnectionID(ctx, session.ConnectionID)
 		ctx = withWorkspaceAndClient(ctx, workspace, client)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -577,4 +578,8 @@ func withWorkspaceAndClient(ctx context.Context, workspace *sdk.Workspace, clien
 	ctx = context.WithValue(ctx, workspaceContextKey, workspace)
 	ctx = context.WithValue(ctx, clientContextKey, client)
 	return ctx
+}
+
+func withConnectionID(ctx context.Context, connectionID string) context.Context {
+	return context.WithValue(ctx, connectionContextKey, connectionID)
 }

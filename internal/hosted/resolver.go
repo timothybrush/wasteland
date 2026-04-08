@@ -388,8 +388,35 @@ func (wr *WorkspaceResolver) resolveFromMetadata(_ context.Context, connectionID
 // InvalidateConnection removes the cached workspace for a connection.
 func (wr *WorkspaceResolver) InvalidateConnection(connectionID string) {
 	wr.mu.Lock()
-	defer wr.mu.Unlock()
+	var upstreams []string
+	if cached, ok := wr.cache[connectionID]; ok && cached != nil && cached.workspace != nil {
+		infos := cached.workspace.Upstreams()
+		upstreams = make([]string, 0, len(infos))
+		for _, info := range infos {
+			if info.Upstream != "" {
+				upstreams = append(upstreams, info.Upstream)
+			}
+		}
+	}
 	delete(wr.cache, connectionID)
+	wr.mu.Unlock()
+
+	if len(upstreams) == 0 {
+		return
+	}
+
+	wr.pendingMu.Lock()
+	caches := make([]*pendingUpstreamCache, 0, len(wr.pendingCache))
+	for _, upstream := range upstreams {
+		if cache, ok := wr.pendingCache[upstream]; ok {
+			caches = append(caches, cache)
+			delete(wr.pendingCache, upstream)
+		}
+	}
+	wr.pendingMu.Unlock()
+	for _, cache := range caches {
+		cache.Stop()
+	}
 }
 
 func (wr *WorkspaceResolver) cachedWorkspace(connectionID string) (*sdk.Workspace, bool) {

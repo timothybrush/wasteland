@@ -13,8 +13,9 @@ import (
 type contextKey string
 
 const (
-	clientContextKey    contextKey = "hosted-client"
-	workspaceContextKey contextKey = "hosted-workspace"
+	clientContextKey     contextKey = "hosted-client"
+	workspaceContextKey  contextKey = "hosted-workspace"
+	connectionContextKey contextKey = "hosted-connection-id"
 )
 
 // ClientFromContext extracts the sdk.Client injected by auth middleware.
@@ -27,6 +28,13 @@ func ClientFromContext(ctx context.Context) (*sdk.Client, bool) {
 func WorkspaceFromContext(ctx context.Context) (*sdk.Workspace, bool) {
 	ws, ok := ctx.Value(workspaceContextKey).(*sdk.Workspace)
 	return ws, ok
+}
+
+// ConnectionIDFromContext extracts the active hosted connection ID injected by
+// auth middleware.
+func ConnectionIDFromContext(ctx context.Context) (string, bool) {
+	connectionID, ok := ctx.Value(connectionContextKey).(string)
+	return connectionID, ok && connectionID != ""
 }
 
 // AuthMiddleware protects /api/* routes (excluding /api/auth/*).
@@ -152,6 +160,7 @@ func (s *Server) AuthMiddleware(next http.Handler) http.Handler {
 
 		// Inject both workspace and client into context.
 		ctx := r.Context()
+		ctx = context.WithValue(ctx, connectionContextKey, session.ConnectionID)
 		ctx = context.WithValue(ctx, workspaceContextKey, workspace)
 		ctx = context.WithValue(ctx, clientContextKey, client)
 		ctx = api.WithResolvedReadIdentity(ctx, api.ResolvedReadIdentity{

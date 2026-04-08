@@ -184,8 +184,22 @@ func (wr *AuthServiceWorkspaceResolver) resolveFromConnection(_ context.Context,
 // InvalidateConnection evicts any cached workspace for the given connection.
 func (wr *AuthServiceWorkspaceResolver) InvalidateConnection(connectionID string) {
 	wr.mu.Lock()
-	defer wr.mu.Unlock()
 	delete(wr.cache, connectionID)
+	wr.mu.Unlock()
+
+	prefix := connectionID + ":"
+	wr.pendingMu.Lock()
+	caches := make([]*pendingUpstreamCache, 0, len(wr.pendingCache))
+	for key, cache := range wr.pendingCache {
+		if strings.HasPrefix(key, prefix) {
+			caches = append(caches, cache)
+			delete(wr.pendingCache, key)
+		}
+	}
+	wr.pendingMu.Unlock()
+	for _, cache := range caches {
+		cache.Stop()
+	}
 }
 
 func (wr *AuthServiceWorkspaceResolver) cachedWorkspace(connectionID string) (*sdk.Workspace, bool) {

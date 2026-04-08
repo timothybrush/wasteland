@@ -342,6 +342,9 @@ func canonicalBrowseKey(r *http.Request) string {
 // invalidateReadCaches busts browse caches for the active upstream and detail
 // caches for the affected item on that upstream.
 func (s *Server) invalidateReadCaches(r *http.Request, client *sdk.Client, wantedID string) {
+	if s.mutationInvalidator != nil {
+		s.mutationInvalidator(r.Context())
+	}
 	if s.hosted && !s.hasCanonicalHostedReadIdentity(r) {
 		s.invalidateAllCaches()
 		return
@@ -352,6 +355,9 @@ func (s *Server) invalidateReadCaches(r *http.Request, client *sdk.Client, wante
 }
 
 func (s *Server) invalidateBrowseReadCaches(r *http.Request, client *sdk.Client) {
+	if s.mutationInvalidator != nil {
+		s.mutationInvalidator(r.Context())
+	}
 	if s.hosted && !s.hasCanonicalHostedReadIdentity(r) {
 		s.invalidateAllCaches()
 		return
@@ -375,6 +381,9 @@ func (s *Server) invalidateDetailCaches(upstream, wantedID string) {
 }
 
 func (s *Server) invalidateUpstreamReadCaches(r *http.Request, client *sdk.Client) {
+	if s.mutationInvalidator != nil {
+		s.mutationInvalidator(r.Context())
+	}
 	if s.hosted && !s.hasCanonicalHostedReadIdentity(r) {
 		s.invalidateAllCaches()
 		return

@@ -5,6 +5,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -21,18 +22,19 @@ type WorkspaceFunc func(r *http.Request) (*sdk.Workspace, error)
 
 // Server is the HTTP API server wrapping an SDK client.
 type Server struct {
-	clientFunc       ClientFunc
-	workspaceFunc    WorkspaceFunc
-	pile             pile.RowQuerier
-	scoreboard       *CachedEndpoint
-	scoreboardDetail *CachedEndpoint
-	scoreboardDump   *CachedEndpoint
-	publicClient     *sdk.Client // anonymous fallback for public reads (hosted mode)
-	browseCache      *ReadCache  // keyed by canonicalized query string
-	detailCache      *ReadCache  // keyed by item ID
-	environment      string
-	mux              *http.ServeMux
-	hosted           bool // true when running in multi-tenant hosted mode
+	clientFunc          ClientFunc
+	workspaceFunc       WorkspaceFunc
+	mutationInvalidator func(context.Context)
+	pile                pile.RowQuerier
+	scoreboard          *CachedEndpoint
+	scoreboardDetail    *CachedEndpoint
+	scoreboardDump      *CachedEndpoint
+	publicClient        *sdk.Client // anonymous fallback for public reads (hosted mode)
+	browseCache         *ReadCache  // keyed by canonicalized query string
+	detailCache         *ReadCache  // keyed by item ID
+	environment         string
+	mux                 *http.ServeMux
+	hosted              bool // true when running in multi-tenant hosted mode
 }
 
 // New creates a Server backed by the given SDK client.
@@ -113,6 +115,13 @@ func (s *Server) SetPublicClient(c *sdk.Client) {
 // SetEnvironment sets the environment string surfaced to browser runtime config.
 func (s *Server) SetEnvironment(environment string) {
 	s.environment = environment
+}
+
+// SetMutationInvalidator registers a callback that runs after successful
+// mutations invalidate API read caches. Hosted mode uses this to evict
+// resolver-owned caches that live beneath the HTTP layer.
+func (s *Server) SetMutationInvalidator(fn func(context.Context)) {
+	s.mutationInvalidator = fn
 }
 
 // ScoreboardHandler returns an http.HandlerFunc for the scoreboard endpoint.

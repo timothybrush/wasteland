@@ -423,6 +423,11 @@ func runServeHosted(cmd *cobra.Command, stdout, _ io.Writer) error {
 	// Build the API server with hosted workspace resolution.
 	apiServer := api.NewHostedWorkspace(hosted.NewClientFunc(), hosted.NewWorkspaceFunc())
 	apiServer.SetEnvironment(environment)
+	apiServer.SetMutationInvalidator(func(ctx context.Context) {
+		if connectionID, ok := hosted.ConnectionIDFromContext(ctx); ok {
+			resolver.InvalidateConnection(connectionID)
+		}
+	})
 
 	// Public read-only RemoteDB against the canonical hosted upstream (no token needed).
 	publicDB := newHostedPublicDB()

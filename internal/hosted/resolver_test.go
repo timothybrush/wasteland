@@ -439,7 +439,17 @@ func TestWorkspaceResolver_InvalidateConnection(t *testing.T) {
 		t.Fatalf("first resolve: %v", err)
 	}
 
+	cache := resolver.getOrCreatePendingCache(nil, "wasteland", "wl-commons")
+	defer cache.Stop()
+	if _, ok := resolver.pendingCache["wasteland/wl-commons"]; !ok {
+		t.Fatal("expected pending cache to be stored before invalidation")
+	}
+
 	resolver.InvalidateConnection("conn-1")
+
+	if _, ok := resolver.pendingCache["wasteland/wl-commons"]; ok {
+		t.Fatal("expected pending cache to be evicted for invalidated connection")
+	}
 
 	ws2, err := resolver.Resolve(session)
 	if err != nil {

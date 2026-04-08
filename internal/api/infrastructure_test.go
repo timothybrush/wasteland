@@ -675,6 +675,38 @@ func TestInvalidateReadCaches_TargetsOnlyMatchingUpstreamAndItem(t *testing.T) {
 	}
 }
 
+func TestInvalidateReadCaches_CallsMutationInvalidator(t *testing.T) {
+	srv := NewHostedWorkspace(func(*http.Request) (*sdk.Client, error) {
+		return sdk.New(sdk.ClientConfig{
+			RigHandle: "alice",
+			Upstream:  "hop/wl-commons",
+			Mode:      "wild-west",
+		}), nil
+	}, nil)
+
+	var calls atomic.Int32
+	srv.SetMutationInvalidator(func(context.Context) {
+		calls.Add(1)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/wanted/w-1/reject-upstream", nil)
+	req = req.WithContext(WithResolvedReadIdentity(req.Context(), ResolvedReadIdentity{
+		Upstream: "hop/wl-commons",
+		Viewer:   "alice",
+	}))
+	client := sdk.New(sdk.ClientConfig{
+		RigHandle: "alice",
+		Upstream:  "hop/wl-commons",
+		Mode:      "wild-west",
+	})
+
+	srv.invalidateReadCaches(req, client, "w-1")
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("mutation invalidator calls = %d, want 1", got)
+	}
+}
+
 func TestInvalidateUpstreamReadCaches_TargetsOnlyMatchingUpstream(t *testing.T) {
 	srv := NewHostedWorkspace(func(*http.Request) (*sdk.Client, error) {
 		return sdk.New(sdk.ClientConfig{
