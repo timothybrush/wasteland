@@ -588,6 +588,49 @@ func TestDetailContext_UsesContextAwareCheckPR(t *testing.T) {
 	}
 }
 
+func TestPRMutations_DoNotRequireCheckPRContextForBranchDurability(t *testing.T) {
+	db := newFakeDB()
+	db.seedItem(fakeItem{
+		ID:          "w-1",
+		Title:       "Fix bug",
+		Status:      "claimed",
+		ClaimedBy:   "alice",
+		PostedBy:    "bob",
+		EffortLevel: "medium",
+	})
+
+	c := New(ClientConfig{
+		DB:        db,
+		RigHandle: "alice",
+		Mode:      "pr",
+		CheckPRContext: func(context.Context, string) string {
+			t.Fatal("CheckPRContext() should not be called on the mutation hot path")
+			return ""
+		},
+		CheckPR: func(string) string {
+			t.Fatal("CheckPR() should not be called on the mutation hot path")
+			return ""
+		},
+	})
+
+	result, err := c.Unclaim("w-1")
+	if err != nil {
+		t.Fatalf("Unclaim() error = %v", err)
+	}
+	if result.Detail == nil || result.Detail.Item == nil {
+		t.Fatal("expected mutation detail item")
+	}
+	if result.Detail.Item.Status != "open" {
+		t.Fatalf("status = %q, want open", result.Detail.Item.Status)
+	}
+	if result.Detail.Branch == "" {
+		t.Fatal("expected branch to persist when branch diverges from main")
+	}
+	if result.Detail.Delta == "" {
+		t.Fatal("expected non-empty delta for branch mutation")
+	}
+}
+
 func TestDetail_UsesSingleJoinedQuery(t *testing.T) {
 	var calls int
 	db := &queryOnlyDB{

@@ -1836,11 +1836,15 @@ func TestBranchActions_PRMode_WithPR(t *testing.T) {
 	})
 
 	// Claim creates a branch with a delta.
-	result, err := c.Claim("w-1")
-	if err != nil {
+	if _, err := c.Claim("w-1"); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
-	d := result.Detail
+	// Detail lookups still resolve the existing PR and should suppress
+	// submit_pr from branch actions.
+	d, err := c.Detail("w-1")
+	if err != nil {
+		t.Fatalf("Detail: %v", err)
+	}
 	// PR mode + delta + existing PR → discard only
 	if len(d.BranchActions) != 1 {
 		t.Fatalf("expected 1 branch action, got %v", d.BranchActions)

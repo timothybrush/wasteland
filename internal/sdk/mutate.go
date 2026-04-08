@@ -2,7 +2,6 @@ package sdk
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -158,9 +157,10 @@ func (c *Client) mutatePRResult(wantedID, branch, mainStatus string) *MutationRe
 		detail.Actions = commons.AvailableTransitions(item, c.rigHandle)
 		detail.Delta = commons.ComputeDelta(mainStatus, item.Status, true)
 	}
-	if branch != "" {
-		detail.PRURL = c.checkPRContext(context.Background(), branch)
-	}
+	// Skip PR lookup on mutation responses. On large repos, finding an existing
+	// PR requires paging through upstream pulls and can dominate mutation
+	// latency even though the branch write has already succeeded. Detail reads
+	// still resolve PRURL on demand.
 	if branch != "" && c.BranchURL != nil {
 		detail.BranchURL = c.BranchURL(branch)
 	}
