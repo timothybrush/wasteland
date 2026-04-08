@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -166,7 +167,7 @@ func verifyServiceRequest(
 		return ServiceScope{}, ErrServiceUnauthorized
 	}
 	if err := nonces.UseServiceNonce(ctx, keyID, nonce, now, timestamp.Add(maxClockSkew)); err != nil {
-		if err == ErrConflict {
+		if errors.Is(err, ErrConflict) {
 			return ServiceScope{}, ErrServiceReplay
 		}
 		return ServiceScope{}, err

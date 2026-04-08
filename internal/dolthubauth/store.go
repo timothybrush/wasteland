@@ -496,7 +496,7 @@ func (s *PostgresStore) patchMetadataTx(
 		return nil, err
 	}
 	if err := validateMetadata(*meta); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidMetadata, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidMetadata, err)
 	}
 
 	encodedWastelands, err := json.Marshal(meta.Wastelands)
