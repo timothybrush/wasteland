@@ -69,7 +69,7 @@ export function Layout() {
             <span className={styles.impersonateBar}>
               {impersonating ? (
                 <>
-                  <span className={styles.impersonateLabel}>viewing as {impersonating}</span>
+                  <span className={styles.impersonateLabel}>acting as {impersonating}</span>
                   <button
                     type="button"
                     className={styles.impersonateBtn}

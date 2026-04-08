@@ -28,6 +28,9 @@ This adopts the submitter's upstream PR into the main wanted item, creates a
 completion record, and issues a stamp. The submitter must currently have an
 in-review upstream submission for the wanted item.
 
+Self-stamps are not allowed. If the submitter is you, use 'wl close-upstream'
+instead.
+
 Examples:
   wl accept-upstream w-abc123 charlie --quality 4
   wl accept-upstream w-abc123 charlie --quality 5 --reliability 4 --severity branch

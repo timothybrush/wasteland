@@ -73,7 +73,7 @@ func TestAvailableActions(t *testing.T) {
 		{"in_review/poster", "in_review", "alice", "bob", "alice", []string{"accept", "reject", "close"}},
 		{"in_review/claimer", "in_review", "alice", "bob", "bob", []string{}},
 		{"in_review/other", "in_review", "alice", "bob", "carol", []string{}},
-		{"in_review/poster=claimer", "in_review", "alice", "alice", "alice", []string{"accept", "reject", "close"}},
+		{"in_review/poster=claimer", "in_review", "alice", "alice", "alice", []string{"reject", "close"}},
 
 		// --- completed ---
 		{"completed/poster", "completed", "alice", "bob", "alice", []string{}},

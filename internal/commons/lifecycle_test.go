@@ -122,8 +122,8 @@ func TestCanPerformTransition_Accept(t *testing.T) {
 		PostedBy:  "poster",
 		ClaimedBy: "poster",
 	}
-	if !CanPerformTransition(selfItem, TransitionAccept, "poster") {
-		t.Error("poster should be able to accept own claimed work")
+	if CanPerformTransition(selfItem, TransitionAccept, "poster") {
+		t.Error("poster should not be able to accept own claimed work")
 	}
 	if CanPerformTransition(item, TransitionAccept, "claimer") {
 		t.Error("claimer should not be able to accept without poster/admin rights")
@@ -161,8 +161,8 @@ func TestCanPerformTransition_Admin(t *testing.T) {
 		PostedBy:  "poster",
 		ClaimedBy: "csells",
 	}
-	if !CanPerformTransition(selfItem, TransitionAccept, "csells") {
-		t.Error("admin who claimed should be able to accept")
+	if CanPerformTransition(selfItem, TransitionAccept, "csells") {
+		t.Error("admin who claimed should not be able to accept")
 	}
 	// Admin cannot delete (poster-only).
 	openItem := &WantedItem{

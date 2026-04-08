@@ -489,7 +489,7 @@ func TestAcceptFullLifecycle(t *testing.T) {
 	}
 }
 
-func TestAcceptSelfAllowed(t *testing.T) {
+func TestSelfCompletionRequiresClose(t *testing.T) {
 	for _, backend := range backends {
 		t.Run(string(backend), func(t *testing.T) {
 			env := joinedLifecycleEnv(t, backend)
@@ -513,11 +513,19 @@ func TestAcceptSelfAllowed(t *testing.T) {
 			}
 
 			stdout, stderr, err := runWL(t, env, "accept", wantedID, "--quality", "3", "--no-push")
-			if err != nil {
-				t.Fatalf("wl accept failed: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
+			if err == nil {
+				t.Fatalf("wl accept should have failed for self-completion\nstdout: %s\nstderr: %s", stdout, stderr)
 			}
-			if !strings.Contains(stdout, "Accepted") {
-				t.Errorf("expected 'Accepted' message, got: %s", stdout)
+			if !strings.Contains(stderr, `use "wl close `+wantedID+`"`) {
+				t.Fatalf("expected close hint in stderr, got:\n%s", stderr)
+			}
+
+			stdout, stderr, err = runWL(t, env, "close", wantedID, "--no-push")
+			if err != nil {
+				t.Fatalf("wl close failed: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
+			}
+			if !strings.Contains(stdout, "Closed") {
+				t.Errorf("expected 'Closed' message, got: %s", stdout)
 			}
 
 			raw := doltSQL(t, dbDir, "SELECT status FROM wanted WHERE id='"+wantedID+"'")
@@ -526,16 +534,14 @@ func TestAcceptSelfAllowed(t *testing.T) {
 				t.Errorf("status = %q, want %q", rows[1][0], "completed")
 			}
 
-			raw = doltSQL(t, dbDir, "SELECT author, subject FROM stamps WHERE context_id IN (SELECT id FROM completions WHERE wanted_id='"+wantedID+"')")
+			raw = doltSQL(t, dbDir, "SELECT COUNT(*) FROM stamps WHERE context_id IN (SELECT id FROM completions WHERE wanted_id='"+wantedID+"')")
 			rows = parseCSV(t, raw)
-			if len(rows) < 2 {
-				t.Fatal("no stamp record found")
-			}
-			if rows[1][0] != forkOrg {
-				t.Errorf("stamp author = %q, want %q", rows[1][0], forkOrg)
-			}
-			if rows[1][1] != forkOrg {
-				t.Errorf("stamp subject = %q, want %q", rows[1][1], forkOrg)
+			if len(rows) < 2 || rows[1][0] != "0" {
+				var got string
+				if len(rows) >= 2 {
+					got = rows[1][0]
+				}
+				t.Errorf("stamp count = %q, want %q", got, "0")
 			}
 		})
 	}

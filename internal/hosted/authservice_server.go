@@ -547,10 +547,6 @@ func (s *AuthServiceServer) AuthMiddleware(next http.Handler) http.Handler {
 		r.Header.Set("X-Wasteland", upstream)
 
 		if impersonate := r.Header.Get("X-Impersonate"); impersonate != "" && s.environment == "staging" {
-			if r.Method != http.MethodGet {
-				writeJSON(w, http.StatusForbidden, map[string]string{"error": "impersonation is read-only"})
-				return
-			}
 			client = client.WithRigHandle(impersonate)
 		}
 

@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -1609,6 +1610,27 @@ func TestClose_WildWest(t *testing.T) {
 	}
 }
 
+func TestAccept_SelfRequiresClose(t *testing.T) {
+	db := newFakeDB()
+	db.seedItem(fakeItem{ID: "w-1", Title: "Fix bug", Status: "in_review", ClaimedBy: "alice", PostedBy: "alice", EffortLevel: "medium"})
+	db.completions["w-1"] = &fakeCompletion{ID: "c-1", WantedID: "w-1", CompletedBy: "alice", Evidence: "proof"}
+
+	c := New(ClientConfig{DB: db, RigHandle: "alice", Mode: "wild-west"})
+
+	_, err := c.Accept("w-1", AcceptInput{Quality: 4, Reliability: 4})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var conflict *commons.ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("expected ConflictError, got %T: %v", err, err)
+	}
+	if got, want := conflict.Error(), `cannot issue a stamp to yourself; use "wl close w-1"`; got != want {
+		t.Fatalf("conflict = %q, want %q", got, want)
+	}
+}
+
 func TestDelete_WildWest(t *testing.T) {
 	db := newFakeDB()
 	db.seedItem(fakeItem{ID: "w-1", Title: "Fix bug", Status: "open", PostedBy: "alice", EffortLevel: "medium"})
@@ -2082,7 +2104,7 @@ func TestAcceptUpstream_MainInReview_ForkInReview(t *testing.T) {
 	}
 }
 
-func TestAcceptUpstream_SelfAcceptAllowed(t *testing.T) {
+func TestAcceptUpstream_SelfRequiresCloseUpstream(t *testing.T) {
 	db := newFakeDB()
 	db.seedItem(fakeItem{ID: "w-1", Title: "Fix bug", Status: "in_review", PostedBy: "alice", EffortLevel: "medium"})
 
@@ -2095,21 +2117,17 @@ func TestAcceptUpstream_SelfAcceptAllowed(t *testing.T) {
 		}),
 	})
 
-	result, err := c.AcceptUpstream("w-1", "charlie", AcceptInput{Quality: 4, Reliability: 4, Severity: "leaf"})
-	if err != nil {
-		t.Fatalf("AcceptUpstream: %v", err)
+	_, err := c.AcceptUpstream("w-1", "charlie", AcceptInput{Quality: 4, Reliability: 4, Severity: "leaf"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
-	if result.Detail.Item.Status != "completed" {
-		t.Errorf("expected completed, got %s", result.Detail.Item.Status)
+
+	var conflict *commons.ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("expected ConflictError, got %T: %v", err, err)
 	}
-	if db.completions["w-1"].CompletedBy != "charlie" {
-		t.Errorf("expected charlie completion, got %s", db.completions["w-1"].CompletedBy)
-	}
-	if db.completions["w-1"].ValidatedBy != "charlie" {
-		t.Errorf("validated_by = %q, want %q", db.completions["w-1"].ValidatedBy, "charlie")
-	}
-	if db.completions["w-1"].StampID == "" {
-		t.Fatal("expected stamp id to be recorded")
+	if got, want := conflict.Error(), `cannot issue a stamp to yourself; use "wl close-upstream w-1 charlie"`; got != want {
+		t.Fatalf("conflict = %q, want %q", got, want)
 	}
 }
 

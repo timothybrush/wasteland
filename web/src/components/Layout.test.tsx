@@ -173,7 +173,7 @@ describe("Layout", () => {
 
     renderLayout("/");
 
-    expect(screen.getByText("viewing as bob")).toBeInTheDocument();
+    expect(screen.getByText("acting as bob")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "stop" })).toBeInTheDocument();
   });
 

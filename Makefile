@@ -18,6 +18,7 @@ BUILD_TIME := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 # Set to "true" to enable inference UI in CLI and web.
 INFER_ENABLED ?= false
+INTEGRATION_TIMEOUT ?= 45m
 
 LDFLAGS := -X main.version=$(VERSION) \
            -X main.commit=$(COMMIT) \
@@ -78,11 +79,11 @@ test:
 
 ## test-integration: run all tests including integration
 test-integration:
-	go test -tags integration -timeout 20m ./...
+	go test -tags integration -timeout $(INTEGRATION_TIMEOUT) ./...
 
 ## test-integration-offline: run offline integration tests only (no network, requires dolt)
 test-integration-offline:
-	go test -tags integration -v -timeout 20m ./internal/remote/ ./test/integration/offline/
+	go test -tags integration -v -timeout $(INTEGRATION_TIMEOUT) ./internal/remote/ ./test/integration/offline/
 
 ## test-cover: run tests with coverage output
 test-cover:

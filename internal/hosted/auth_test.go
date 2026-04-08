@@ -997,7 +997,7 @@ func TestAuthMiddleware_Impersonate_Staging_PreservesResolvedViewerIdentity(t *t
 	}
 }
 
-func TestAuthMiddleware_Impersonate_Staging_POST_Blocked(t *testing.T) {
+func TestAuthMiddleware_Impersonate_Staging_POST_Allowed(t *testing.T) {
 	sessions, ts := setupStagingTestServer(t)
 	sessionID, _ := sessions.Create("conn-1")
 
@@ -1012,9 +1012,18 @@ func TestAuthMiddleware_Impersonate_Staging_POST_Blocked(t *testing.T) {
 	}
 	defer resp.Body.Close() //nolint:errcheck // test cleanup
 
-	if resp.StatusCode != http.StatusForbidden {
+	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		t.Errorf("expected 403, got %d: %s", resp.StatusCode, string(body))
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result map[string]string
+	_ = json.NewDecoder(resp.Body).Decode(&result)
+	if result["rig_handle"] != "bob" {
+		t.Errorf("expected impersonated rig_handle=bob, got %s", result["rig_handle"])
+	}
+	if result["viewer"] != "alice" {
+		t.Errorf("expected resolved viewer=alice, got %s", result["viewer"])
 	}
 }
 

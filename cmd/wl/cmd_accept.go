@@ -29,6 +29,9 @@ The item must be in 'in_review' status.
 A stamp is created with quality and optional reliability ratings (1-5),
 severity (leaf/branch/root), and optional skill tags.
 
+Self-stamps are not allowed. If you completed the item yourself, use
+'wl close' instead.
+
 In wild-west mode the commit is auto-pushed to upstream and origin.
 Use --no-push to skip pushing (offline work).
 
@@ -114,7 +117,11 @@ func runAccept(cmd *cobra.Command, stdout, _ io.Writer, wantedID string, quality
 	}
 
 	renderMutationResult(stdout, "Accepted", wantedID, result, extras...)
-	printNextHint(stdout, "Next: stamp issued. View: wl status "+wantedID)
+	nextHint := "Next: stamp issued. View: wl status " + wantedID
+	if result.Detail == nil || result.Detail.Stamp == nil {
+		nextHint = "Next: item completed without a stamp. View: wl status " + wantedID
+	}
+	printNextHint(stdout, nextHint)
 
 	return nil
 }

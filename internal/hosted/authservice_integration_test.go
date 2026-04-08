@@ -138,6 +138,91 @@ func (f *fakeAuthService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "not found", http.StatusNotFound)
 }
 
+func setupAuthServiceStagingMiddlewareTestServer(t *testing.T) (*SessionStore, *httptest.Server) {
+	t.Helper()
+
+	authStub := &fakeAuthService{t: t}
+	authTS := httptest.NewServer(authStub)
+	t.Cleanup(authTS.Close)
+
+	authClient := dolthubauth.NewClient(dolthubauth.ClientConfig{
+		BaseURL:      authTS.URL,
+		TenantID:     "tenant-1",
+		Environment:  "staging",
+		KeyID:        "kid-1",
+		SharedSecret: "shared-secret",
+		Now: func() time.Time {
+			return time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
+		},
+	})
+
+	sessions := NewSessionStore()
+	resolver := NewAuthServiceWorkspaceResolver(authClient, sessions)
+	t.Cleanup(resolver.Stop)
+
+	hostedServer := NewAuthServiceServer(resolver, sessions, authClient, "session-secret", "subject-secret", "staging")
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		client, ok := ClientFromContext(r.Context())
+		if !ok {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		scope, _ := api.ResolvedReadIdentityFromContext(r.Context())
+		writeJSON(w, http.StatusOK, map[string]string{
+			"rig_handle": client.RigHandle(),
+			"upstream":   scope.Upstream,
+			"viewer":     scope.Viewer,
+		})
+	})
+
+	mux := http.NewServeMux()
+	mux.Handle("/", hostedServer.AuthMiddleware(inner))
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	return sessions, ts
+}
+
+func TestAuthServiceAuthMiddleware_Impersonate_Staging_POST_Allowed(t *testing.T) {
+	sessions, ts := setupAuthServiceStagingMiddlewareTestServer(t)
+	sessionID, err := sessions.CreateWithSubject("conn-1", "subject-1")
+	if err != nil {
+		t.Fatalf("CreateWithSubject() error = %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/wanted", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: SignSessionCookie(sessionID, "conn-1", "session-secret")})
+	req.AddCookie(&http.Cookie{Name: subjectCookieName, Value: SignSubjectID("subject-1", "subject-secret")})
+	req.Header.Set("X-Wasteland", "hop/wl-commons")
+	req.Header.Set("X-Impersonate", "bob")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /api/wanted: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if result["rig_handle"] != "bob" {
+		t.Fatalf("rig_handle = %q, want bob", result["rig_handle"])
+	}
+	if result["viewer"] != "alice" {
+		t.Fatalf("viewer = %q, want alice", result["viewer"])
+	}
+	if result["upstream"] == "" {
+		t.Fatal("expected resolved upstream to be set")
+	}
+}
+
 func TestAuthServiceHostedEndToEnd(t *testing.T) {
 	authStub := &fakeAuthService{t: t}
 	authTS := httptest.NewServer(authStub)

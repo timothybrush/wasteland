@@ -357,8 +357,8 @@ func TestDetail_DoneKey_OpensDoneForm(t *testing.T) {
 }
 
 func TestDetail_AcceptKey_OpensAcceptForm(t *testing.T) {
-	// Item is "in_review", posted by me, claimed by me.
-	m := newDetailForTest("in_review", "test-rig", "test-rig", "wild-west")
+	// Item is "in_review", posted by me, claimed by someone else.
+	m := newDetailForTest("in_review", "test-rig", "other-rig", "wild-west")
 
 	result, _ := m.Update(keyMsg("a"))
 	m2 := result.(Model)

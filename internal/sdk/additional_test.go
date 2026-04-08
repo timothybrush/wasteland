@@ -851,6 +851,42 @@ func TestCloseUpstream(t *testing.T) {
 	}
 }
 
+func TestCloseUpstream_SelfAllowed(t *testing.T) {
+	db := newFakeDB()
+	db.seedItem(fakeItem{ID: "w-1", Title: "Fix bug", Status: "in_review", PostedBy: "alice", EffortLevel: "medium"})
+
+	c := New(ClientConfig{
+		DB:        db,
+		RigHandle: "charlie",
+		Mode:      "wild-west",
+		ListPendingItems: pendingItems(map[string][]PendingItem{
+			"w-1": {{
+				RigHandle:   "charlie",
+				Status:      "in_review",
+				CompletedBy: "charlie",
+				Evidence:    "proof",
+			}},
+		}),
+	})
+
+	result, err := c.CloseUpstream("w-1", "charlie")
+	if err != nil {
+		t.Fatalf("CloseUpstream() error = %v", err)
+	}
+	if result.Detail == nil || result.Detail.Item == nil {
+		t.Fatal("CloseUpstream() should return detail with item")
+	}
+	if result.Detail.Item.Status != "completed" {
+		t.Fatalf("status = %q, want completed", result.Detail.Item.Status)
+	}
+	if db.completions["w-1"].CompletedBy != "charlie" {
+		t.Fatalf("completion = %q, want charlie", db.completions["w-1"].CompletedBy)
+	}
+	if db.completions["w-1"].StampID != "" {
+		t.Fatalf("stamp_id = %q, want empty", db.completions["w-1"].StampID)
+	}
+}
+
 func TestFindUpstreamSubmissionErrorsAndLeaderboard(t *testing.T) {
 	t.Run("find upstream submission errors", func(t *testing.T) {
 		c := New(ClientConfig{DB: newFakeDB(), RigHandle: "alice"})
