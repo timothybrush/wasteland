@@ -75,11 +75,6 @@ func (c *Client) Accept(wantedID string, input AcceptInput) (*MutationResult, er
 		return nil, fmt.Errorf("no completion found for item %s", wantedID)
 	}
 
-	// Self-accept guard: the accepting rig must not be the one who completed the work.
-	if completion.CompletedBy == c.rigHandle {
-		return nil, fmt.Errorf("cannot accept your own completion")
-	}
-
 	stamp := &commons.Stamp{
 		ID:          commons.GeneratePrefixedID("s", wantedID, c.rigHandle),
 		Author:      c.rigHandle,
@@ -132,10 +127,6 @@ func (c *Client) AcceptUpstream(wantedID, submitterHandle string, input AcceptIn
 	}
 	if match.CompletedBy == "" {
 		return nil, fmt.Errorf("submission has no completion data")
-	}
-
-	if submitterHandle == c.rigHandle {
-		return nil, fmt.Errorf("cannot accept your own completion")
 	}
 
 	completionID := commons.GeneratePrefixedID("c", wantedID, match.CompletedBy)

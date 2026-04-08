@@ -420,10 +420,8 @@ wl close w-abc123
 ```
 
 The item moves through `open → claimed → in_review → completed`.
-Since `accept` requires a different rig to have completed the work
-(you can't stamp your own completion), use `wl close` to mark your
-own items as completed without issuing a reputation stamp. This is
-housekeeping, not reputation — stamps must come from someone else.
+Use `wl close` to mark your own items as completed without issuing a
+reputation stamp when you just want housekeeping rather than a stamp.
 
 ### Maintainer (Direct Push)
 
@@ -585,6 +583,16 @@ wl serve --dev                  # start API server with CORS for dev proxy
 
 The Vite dev server proxies `/api` requests to `localhost:8999`, so you
 get hot reload on the frontend while the Go backend handles API calls.
+
+Local maintainer-flow browser testing:
+
+```bash
+WL_ENVIRONMENT=staging wl serve
+```
+
+That exposes the existing staging impersonation banner in the web UI, so a
+local synced clone can be exercised as another rig handle while still using the
+real browser approval flow.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 

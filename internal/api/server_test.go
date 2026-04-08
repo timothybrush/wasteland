@@ -702,6 +702,50 @@ func TestClaim(t *testing.T) {
 	}
 }
 
+func TestClaim_SelfHostedStagingImpersonationUsesImpersonatedRigHandle(t *testing.T) {
+	db := newFakeDB()
+	db.items["w-1"] = &fakeItem{id: "w-1", title: "Fix bug", status: "open", priority: 1, postedBy: "carol", effortLevel: "medium"}
+
+	client := sdk.New(sdk.ClientConfig{
+		DB:        db,
+		RigHandle: "alice",
+		Mode:      "wild-west",
+		SaveConfig: func(_ string, _ bool) error {
+			return nil
+		},
+	})
+	srv := New(client)
+	srv.SetEnvironment("staging")
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/wanted/w-1/claim", strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("X-Impersonate", "bob")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /api/wanted/w-1/claim: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // test cleanup
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body MutationResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode mutation: %v", err)
+	}
+	if body.Detail == nil || body.Detail.Item == nil {
+		t.Fatal("expected detail in response")
+	}
+	if body.Detail.Item.ClaimedBy != "bob" {
+		t.Fatalf("claimed_by = %q, want %q", body.Detail.Item.ClaimedBy, "bob")
+	}
+}
+
 func TestUnclaim(t *testing.T) {
 	db := newFakeDB()
 	db.items["w-1"] = &fakeItem{id: "w-1", title: "Fix bug", status: "claimed", claimedBy: "alice", postedBy: "bob", effortLevel: "medium"}

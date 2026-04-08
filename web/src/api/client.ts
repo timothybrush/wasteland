@@ -7,6 +7,7 @@ import type {
   ConfigResponse,
   ConnectInput,
   ConnectResponse,
+  ConnectSessionInput,
   ConnectSessionResponse,
   DashboardResponse,
   DetailResponse,
@@ -314,11 +315,11 @@ export async function authStatus(): Promise<AuthStatusResponse> {
   return request<AuthStatusResponse>("/api/auth/status");
 }
 
-export async function connectSession(endUserId: string): Promise<ConnectSessionResponse> {
+export async function connectSession(input: ConnectSessionInput): Promise<ConnectSessionResponse> {
   return request<ConnectSessionResponse>("/api/auth/connect-session", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ end_user_id: endUserId }),
+    body: JSON.stringify(input),
   });
 }
 

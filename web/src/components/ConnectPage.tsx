@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { authStatus, connectSession, joinWasteland, notifyConnect } from "../api/client";
-import { connectDoltHub, initNango } from "../api/nango";
+import { buildConnectTokenMetadata, redeemConnectToken } from "../api/directAuthService";
 import { useWasteland } from "../context/WastelandContext";
 import styles from "./ConnectPage.module.css";
 
@@ -69,19 +69,30 @@ export function ConnectPage() {
 
     const effectiveRigHandle = rigHandleOverride.trim() || username.trim();
     const effectiveForkOrg = forkOrgOverride.trim() || username.trim();
+    const connectInput = {
+      rig_handle: effectiveRigHandle,
+      fork_org: effectiveForkOrg,
+      fork_db: forkDB.trim() || "wl-commons",
+      upstream: upstream.trim() || "hop/wl-commons",
+      mode: "pr",
+      signing: true,
+      display_name: username.trim(),
+    };
 
     setSubmitting(true);
     try {
-      const session = await connectSession(effectiveRigHandle);
-      const nango = initNango(session.token);
-      const authResult = await connectDoltHub(nango, session.integration_id, apiToken.trim());
+      const session = await connectSession(connectInput);
+      const authResult = await redeemConnectToken({
+        auth_service_base_url: session.auth_service_base_url,
+        connect_token: session.connect_token,
+        redeem_secret: session.redeem_secret,
+        api_key: apiToken.trim(),
+        metadata: buildConnectTokenMetadata(connectInput),
+      });
 
       const connectResp = await notifyConnect({
-        connection_id: authResult.connectionId,
-        rig_handle: effectiveRigHandle,
-        fork_org: effectiveForkOrg,
-        fork_db: forkDB.trim() || "wl-commons",
-        upstream: upstream.trim() || "hop/wl-commons",
+        connection_id: authResult.connection_id,
+        upstream: connectInput.upstream,
         display_name: username.trim(),
       });
 
@@ -111,6 +122,7 @@ export function ConnectPage() {
         fork_org: joinForkOrg.trim(),
         fork_db: joinForkDB.trim(),
         upstream: joinUpstream.trim(),
+        signing: true,
       });
 
       await refresh();

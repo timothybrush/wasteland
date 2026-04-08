@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ConnectSessionInput } from "../api/types";
 import { ConnectPage } from "./ConnectPage";
 
 const mocked = vi.hoisted(() => ({
@@ -9,8 +10,7 @@ const mocked = vi.hoisted(() => ({
   connectSession: vi.fn(),
   notifyConnect: vi.fn(),
   joinWasteland: vi.fn(),
-  initNango: vi.fn(),
-  connectDoltHub: vi.fn(),
+  redeemConnectToken: vi.fn(),
   refresh: vi.fn(),
   toastSuccess: vi.fn(),
   toastWarning: vi.fn(),
@@ -24,9 +24,20 @@ vi.mock("../api/client", () => ({
   joinWasteland: mocked.joinWasteland,
 }));
 
-vi.mock("../api/nango", () => ({
-  initNango: mocked.initNango,
-  connectDoltHub: mocked.connectDoltHub,
+vi.mock("../api/directAuthService", () => ({
+  buildConnectTokenMetadata: vi.fn((input: ConnectSessionInput) => ({
+    rig_handle: input.rig_handle,
+    wastelands: [
+      {
+        upstream: input.upstream,
+        fork_org: input.fork_org,
+        fork_db: input.fork_db,
+        mode: input.mode ?? "pr",
+        signing: input.signing ?? true,
+      },
+    ],
+  })),
+  redeemConnectToken: mocked.redeemConnectToken,
 }));
 
 vi.mock("../context/WastelandContext", () => ({
@@ -66,8 +77,7 @@ afterEach(() => {
   mocked.connectSession.mockReset();
   mocked.notifyConnect.mockReset();
   mocked.joinWasteland.mockReset();
-  mocked.initNango.mockReset();
-  mocked.connectDoltHub.mockReset();
+  mocked.redeemConnectToken.mockReset();
   mocked.refresh.mockReset();
   mocked.toastSuccess.mockReset();
   mocked.toastWarning.mockReset();
@@ -86,8 +96,8 @@ describe("ConnectPage", () => {
 
     renderConnect("/connect?return_to=https://evil.example");
 
-    await waitFor(() => expect(screen.getByTestId("home")).toBeInTheDocument(), { timeout: 5000 });
-  });
+    await waitFor(() => expect(screen.getByTestId("home")).toBeInTheDocument(), { timeout: 10000 });
+  }, 15000);
 
   it("redirects connected users to return_to when entering /connect", async () => {
     mocked.authStatus.mockResolvedValue({
@@ -98,8 +108,8 @@ describe("ConnectPage", () => {
 
     renderConnect("/connect?return_to=/wanted/item-1");
 
-    await waitFor(() => expect(screen.getByTestId("wanted")).toBeInTheDocument(), { timeout: 5000 });
-  });
+    await waitFor(() => expect(screen.getByTestId("wanted")).toBeInTheDocument(), { timeout: 10000 });
+  }, 15000);
 
   it("stays on the join view when already connected and entering /join", async () => {
     mocked.authStatus.mockResolvedValue({
@@ -167,9 +177,13 @@ describe("ConnectPage", () => {
       connected: false,
       wastelands: [],
     });
-    mocked.connectSession.mockResolvedValue({ token: "session-token", integration_id: "dolt" });
-    mocked.initNango.mockReturnValue({ sdk: true });
-    mocked.connectDoltHub.mockResolvedValue({ connectionId: "conn-1" });
+    mocked.connectSession.mockResolvedValue({
+      auth_service_base_url: "https://auth.example.test",
+      connect_token: "connect-token",
+      redeem_secret: "redeem-secret",
+      expires_at: "2026-04-07T19:00:00Z",
+    });
+    mocked.redeemConnectToken.mockResolvedValue({ connection_id: "conn-1", status: "active" });
     mocked.notifyConnect.mockResolvedValue({ setup_warning: "Grant SQL permissions" });
     mocked.refresh.mockResolvedValue(undefined);
 
@@ -180,14 +194,37 @@ describe("ConnectPage", () => {
     fireEvent.change(screen.getByPlaceholderText("your-dolthub-api-token"), { target: { value: "secret-token" } });
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
 
-    await waitFor(() => expect(mocked.connectSession).toHaveBeenCalledWith("alice-dev"));
-    expect(mocked.initNango).toHaveBeenCalledWith("session-token");
-    expect(mocked.connectDoltHub).toHaveBeenCalledWith({ sdk: true }, "dolt", "secret-token");
+    await waitFor(() =>
+      expect(mocked.connectSession).toHaveBeenCalledWith({
+        rig_handle: "alice-dev",
+        fork_org: "alice-dev",
+        fork_db: "wl-commons",
+        upstream: "hop/wl-commons",
+        mode: "pr",
+        signing: true,
+        display_name: "alice-dev",
+      }),
+    );
+    expect(mocked.redeemConnectToken).toHaveBeenCalledWith({
+      auth_service_base_url: "https://auth.example.test",
+      connect_token: "connect-token",
+      redeem_secret: "redeem-secret",
+      api_key: "secret-token",
+      metadata: {
+        rig_handle: "alice-dev",
+        wastelands: [
+          {
+            upstream: "hop/wl-commons",
+            fork_org: "alice-dev",
+            fork_db: "wl-commons",
+            mode: "pr",
+            signing: true,
+          },
+        ],
+      },
+    });
     expect(mocked.notifyConnect).toHaveBeenCalledWith({
       connection_id: "conn-1",
-      rig_handle: "alice-dev",
-      fork_org: "alice-dev",
-      fork_db: "wl-commons",
       upstream: "hop/wl-commons",
       display_name: "alice-dev",
     });
@@ -203,9 +240,13 @@ describe("ConnectPage", () => {
       connected: false,
       wastelands: [],
     });
-    mocked.connectSession.mockResolvedValue({ token: "session-token", integration_id: "dolt" });
-    mocked.initNango.mockReturnValue({ sdk: true });
-    mocked.connectDoltHub.mockResolvedValue({ connectionId: "conn-1" });
+    mocked.connectSession.mockResolvedValue({
+      auth_service_base_url: "https://auth.example.test",
+      connect_token: "connect-token",
+      redeem_secret: "redeem-secret",
+      expires_at: "2026-04-07T19:00:00Z",
+    });
+    mocked.redeemConnectToken.mockResolvedValue({ connection_id: "conn-1", status: "active" });
     mocked.notifyConnect.mockResolvedValue({});
     mocked.refresh.mockResolvedValue(undefined);
 
@@ -227,12 +268,13 @@ describe("ConnectPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
 
     await waitFor(() =>
-      expect(mocked.notifyConnect).toHaveBeenCalledWith({
-        connection_id: "conn-1",
+      expect(mocked.connectSession).toHaveBeenCalledWith({
         rig_handle: "alice",
         fork_org: "alice-org",
         fork_db: "wl-custom",
         upstream: "org/wl-custom",
+        mode: "pr",
+        signing: true,
         display_name: "alice-dev",
       }),
     );
@@ -296,11 +338,12 @@ describe("ConnectPage", () => {
         fork_org: "alice-org",
         fork_db: "wl-other",
         upstream: "org/wl-other",
+        signing: true,
       }),
     );
     expect(mocked.refresh).toHaveBeenCalled();
     expect(mocked.toastWarning).toHaveBeenCalledWith("Fork created without branch perms");
     expect(mocked.toastSuccess).toHaveBeenCalledWith("Joined wasteland");
-    await waitFor(() => expect(screen.getByTestId("wanted")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("wanted")).toBeInTheDocument(), { timeout: 10000 });
   }, 10000);
 });

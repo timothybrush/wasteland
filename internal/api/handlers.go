@@ -27,6 +27,16 @@ func strictPendingReadContext(ctx context.Context, cacheable bool) context.Conte
 	return ctx
 }
 
+func (s *Server) maybeImpersonateClient(r *http.Request, client *sdk.Client) *sdk.Client {
+	if client == nil || !s.allowStagingImpersonation() {
+		return client
+	}
+	if impersonate := strings.TrimSpace(r.Header.Get("X-Impersonate")); impersonate != "" {
+		return client.WithRigHandle(impersonate)
+	}
+	return client
+}
+
 // resolveClient extracts the sdk.Client from the request. Returns false if
 // the client cannot be resolved (writes a 401 error to w in that case).
 // For GET requests, falls back to the anonymous public client if available.
@@ -34,13 +44,7 @@ func (s *Server) resolveClient(w http.ResponseWriter, r *http.Request) (*sdk.Cli
 	client, err := s.clientFunc(r)
 	if err != nil {
 		if r.Method == http.MethodGet && s.publicClient != nil {
-			c := s.publicClient
-			// Staging impersonation: if the user isn't authenticated but
-			// is impersonating, swap the rig handle on the public client
-			// so actions reflect the impersonated user's permissions.
-			if impersonate := r.Header.Get("X-Impersonate"); impersonate != "" && s.hosted {
-				c = c.WithRigHandle(impersonate)
-			}
+			c := s.maybeImpersonateClient(r, s.publicClient)
 			if s.hosted {
 				*r = *r.WithContext(WithResolvedReadIdentity(r.Context(), ResolvedReadIdentity{
 					Upstream: s.publicClient.Upstream(),
@@ -52,7 +56,7 @@ func (s *Server) resolveClient(w http.ResponseWriter, r *http.Request) (*sdk.Cli
 		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return nil, false
 	}
-	return client, true
+	return s.maybeImpersonateClient(r, client), true
 }
 
 // --- Read handlers ---
@@ -240,13 +244,14 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	var client *sdk.Client
 	resolved, err := s.clientFunc(r)
 	if err == nil {
-		client = resolved
+		client = s.maybeImpersonateClient(r, resolved)
 	} else if s.publicClient != nil {
-		client = s.publicClient
+		client = s.maybeImpersonateClient(r, s.publicClient)
 	}
 
 	resp := BootstrapResponse{
-		Hosted: s.hosted,
+		Hosted:      s.hosted,
+		Environment: s.effectiveEnvironment(),
 	}
 	if client != nil {
 		resp.Connected = true

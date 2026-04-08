@@ -489,10 +489,11 @@ func TestAcceptFullLifecycle(t *testing.T) {
 	}
 }
 
-func TestAcceptSelfReject(t *testing.T) {
+func TestAcceptSelfAllowed(t *testing.T) {
 	for _, backend := range backends {
 		t.Run(string(backend), func(t *testing.T) {
 			env := joinedLifecycleEnv(t, backend)
+			dbDir := forkCloneDir(t, env)
 
 			// Post → claim → done as forkOrg.
 			stdout, _, err := runWL(t, env, "post", "--title", "Self accept test", "--type", "bug", "--no-push")
@@ -511,10 +512,30 @@ func TestAcceptSelfReject(t *testing.T) {
 				t.Fatalf("wl done failed: %v", err)
 			}
 
-			// Accept as same rig should fail.
-			_, _, err = runWL(t, env, "accept", wantedID, "--quality", "3", "--no-push")
-			if err == nil {
-				t.Fatal("accept by same rig should have failed")
+			stdout, stderr, err := runWL(t, env, "accept", wantedID, "--quality", "3", "--no-push")
+			if err != nil {
+				t.Fatalf("wl accept failed: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
+			}
+			if !strings.Contains(stdout, "Accepted") {
+				t.Errorf("expected 'Accepted' message, got: %s", stdout)
+			}
+
+			raw := doltSQL(t, dbDir, "SELECT status FROM wanted WHERE id='"+wantedID+"'")
+			rows := parseCSV(t, raw)
+			if len(rows) < 2 || rows[1][0] != "completed" {
+				t.Errorf("status = %q, want %q", rows[1][0], "completed")
+			}
+
+			raw = doltSQL(t, dbDir, "SELECT author, subject FROM stamps WHERE context_id IN (SELECT id FROM completions WHERE wanted_id='"+wantedID+"')")
+			rows = parseCSV(t, raw)
+			if len(rows) < 2 {
+				t.Fatal("no stamp record found")
+			}
+			if rows[1][0] != forkOrg {
+				t.Errorf("stamp author = %q, want %q", rows[1][0], forkOrg)
+			}
+			if rows[1][1] != forkOrg {
+				t.Errorf("stamp subject = %q, want %q", rows[1][1], forkOrg)
 			}
 		})
 	}

@@ -157,6 +157,40 @@ func TestBootstrap_ReturnsRigHandleAndNoStore(t *testing.T) {
 	}
 }
 
+func TestBootstrap_StagingImpersonationUsesImpersonatedViewerAndEnvironment(t *testing.T) {
+	srv := New(newTestClient(newFakeDB()))
+	srv.SetEnvironment("staging")
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/bootstrap", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("X-Impersonate", "bob")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/bootstrap: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // test cleanup
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var boot BootstrapResponse
+	if err := json.NewDecoder(resp.Body).Decode(&boot); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	if boot.RigHandle != "bob" {
+		t.Fatalf("rig_handle = %q, want %q", boot.RigHandle, "bob")
+	}
+	if boot.Environment != "staging" {
+		t.Fatalf("environment = %q, want %q", boot.Environment, "staging")
+	}
+}
+
 func TestSetProfileQuerier_OverridesProfileSource(t *testing.T) {
 	sheetJSON := `{"identity":{"display_name":"Injected"},"value_dimensions":{"quality":0.7}}`
 	pq := &fakePileQuerier{rows: map[string][]map[string]any{

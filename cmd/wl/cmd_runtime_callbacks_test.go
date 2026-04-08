@@ -233,6 +233,50 @@ func TestRunTUI_RemoteClientCallbacks(t *testing.T) {
 	}
 }
 
+func TestRunServe_UsesWLEnvironmentOverride(t *testing.T) {
+	var capturedServer *fakeSelfHostedServer
+	withSelfHostedAPIServerOverride(t, func(client *sdk.Client) selfHostedAPIServer {
+		capturedServer = &fakeSelfHostedServer{client: client}
+		return capturedServer
+	})
+	withServeListenOverride(t, func(*http.Server) error { return nil })
+	withLocalWorkflowDBOverride(t, func(string, string) localWorkflowDB {
+		return fakeLocalWorkflowDB{
+			scriptedDB: scriptedDB{
+				syncFunc:  func() error { return nil },
+				queryFunc: func(string, string) (string, error) { return "", nil },
+			},
+		}
+	})
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("WL_ENVIRONMENT", "staging")
+	saveTestConfig(t, &federation.Config{
+		Upstream:  "hop/wl-commons",
+		ForkOrg:   "alice",
+		ForkDB:    "wl-commons",
+		LocalDir:  t.TempDir(),
+		RigHandle: "alice",
+		Backend:   federation.BackendLocal,
+		JoinedAt:  time.Now(),
+	})
+	installFakeDolt(t, "#!/bin/sh\nexit 0\n")
+
+	cmd := commandWithWasteland("hop/wl-commons")
+	cmd.Flags().Int("port", 8999, "")
+	cmd.Flags().Bool("dev", false, "")
+	_ = cmd.Flags().Set("local-db", "true")
+	if err := runServe(cmd, io.Discard, io.Discard); err != nil {
+		t.Fatalf("runServe() error = %v", err)
+	}
+	if capturedServer == nil || capturedServer.client == nil {
+		t.Fatal("self-hosted API server did not receive client")
+	}
+	if capturedServer.env != "staging" {
+		t.Fatalf("environment = %q, want %q", capturedServer.env, "staging")
+	}
+}
+
 func TestRunServe_LocalClientCallbacks(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("DOLTHUB_TOKEN", "token")

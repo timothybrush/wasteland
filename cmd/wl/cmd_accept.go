@@ -24,7 +24,7 @@ func newAcceptCmd(stdout, stderr io.Writer) *cobra.Command {
 		Short: "Accept a completed wanted item and issue a stamp",
 		Long: `Accept a completed wanted item by reviewing the work and issuing a reputation stamp.
 
-The item must be in 'in_review' status. You cannot accept your own completion.
+The item must be in 'in_review' status.
 
 A stamp is created with quality and optional reliability ratings (1-5),
 severity (leaf/branch/root), and optional skill tags.

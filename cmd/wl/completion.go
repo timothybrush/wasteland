@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -43,6 +44,50 @@ func completeWantedIDs(statusFilter string) func(*cobra.Command, []string, strin
 		ids := listWantedIDsWithTimeout(cfg.LocalDir, statusFilter)
 		writeCompletionCache(cacheKey, ids)
 		return ids, cobra.ShellCompDirectiveNoFileComp
+	}
+}
+
+// completeUpstreamSubmitterHandles completes submitter rig handles for an item
+// that already has pending upstream submissions.
+func completeUpstreamSubmitterHandles() func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+	return func(cmd *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		if len(args) > 1 {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+
+		cfg, err := resolveWasteland(cmd)
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		wantedID, err := resolveWantedArg(cfg, args[0])
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		client, err := newCommandClient(cfg, false)
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		detail, err := client.Detail(wantedID)
+		if err != nil || detail == nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		seen := make(map[string]struct{}, len(detail.UpstreamPRs))
+		handles := make([]string, 0, len(detail.UpstreamPRs))
+		for _, pending := range detail.UpstreamPRs {
+			if pending.RigHandle == "" {
+				continue
+			}
+			if _, ok := seen[pending.RigHandle]; ok {
+				continue
+			}
+			seen[pending.RigHandle] = struct{}{}
+			handles = append(handles, pending.RigHandle)
+		}
+		sort.Strings(handles)
+		return handles, cobra.ShellCompDirectiveNoFileComp
 	}
 }
 

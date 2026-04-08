@@ -1,4 +1,4 @@
-// Package hosted provides multi-tenant hosted mode with Nango credential delegation.
+// Package hosted provides multi-tenant hosted mode with external credential delegation.
 package hosted
 
 import (
@@ -16,7 +16,8 @@ import (
 // UserSession represents an authenticated browser session.
 type UserSession struct {
 	ID             string
-	ConnectionID   string // Nango connection ID (set after DoltHub connect)
+	SubjectID      string
+	ConnectionID   string // External auth-service connection ID (set after DoltHub connect)
 	ActiveUpstream string
 	CreatedAt      time.Time
 }
@@ -49,8 +50,13 @@ func (s *SessionStore) cleanup() {
 	}
 }
 
-// Create creates a new session with the given Nango connection ID.
+// Create creates a new session with the given connection ID.
 func (s *SessionStore) Create(connectionID string) (string, error) {
+	return s.CreateWithSubject(connectionID, "")
+}
+
+// CreateWithSubject creates a new session with the given connection and subject.
+func (s *SessionStore) CreateWithSubject(connectionID, subjectID string) (string, error) {
 	id, err := generateSessionID()
 	if err != nil {
 		return "", err
@@ -59,13 +65,17 @@ func (s *SessionStore) Create(connectionID string) (string, error) {
 	defer s.mu.Unlock()
 	s.sessions[id] = &UserSession{
 		ID:           id,
+		SubjectID:    subjectID,
 		ConnectionID: connectionID,
 		CreatedAt:    time.Now(),
 	}
 	return id, nil
 }
 
-const sessionTTL = 24 * time.Hour
+const (
+	sessionTTL       = 24 * time.Hour
+	subjectCookieTTL = 365 * 24 * time.Hour
+)
 
 // Get retrieves a session by ID. Expired sessions (>24h) are lazily evicted.
 func (s *SessionStore) Get(id string) (*UserSession, bool) {
@@ -112,10 +122,16 @@ func (s *SessionStore) ActiveUpstream(id string) string {
 // The original creation time is unknown, so the session gets a reduced TTL
 // (half the normal sessionTTL) to limit how much a restart can extend a session.
 func (s *SessionStore) Restore(sessionID, connectionID string) {
+	s.RestoreWithSubject(sessionID, connectionID, "")
+}
+
+// RestoreWithSubject re-creates a session from cookie data with subject context.
+func (s *SessionStore) RestoreWithSubject(sessionID, connectionID, subjectID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessions[sessionID] = &UserSession{
 		ID:           sessionID,
+		SubjectID:    subjectID,
 		ConnectionID: connectionID,
 		CreatedAt:    time.Now().Add(-sessionTTL / 2),
 	}
@@ -129,7 +145,10 @@ func generateSessionID() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-const cookieName = "wl_session"
+const (
+	cookieName        = "wl_session"
+	subjectCookieName = "wl_subject"
+)
 
 // SignSessionID signs a session ID with the given secret using HMAC-SHA256.
 func SignSessionID(id, secret string) string {
@@ -248,4 +267,38 @@ func ReadSessionCookie(r *http.Request, secret string) (string, string, bool) {
 	}
 
 	return "", "", false
+}
+
+// SignSubjectID signs a stable hosted subject identifier.
+func SignSubjectID(subjectID, secret string) string {
+	return SignSessionID(subjectID, secret)
+}
+
+// VerifySubjectID verifies a stable hosted subject identifier cookie.
+func VerifySubjectID(signed, secret string) (string, bool) {
+	return VerifySessionID(signed, secret)
+}
+
+// SetSubjectCookie sets the stable hosted subject identifier cookie.
+func SetSubjectCookie(w http.ResponseWriter, subjectID, secret string) {
+	expiresAt := time.Now().Add(subjectCookieTTL)
+	http.SetCookie(w, &http.Cookie{
+		Name:     subjectCookieName,
+		Value:    SignSubjectID(subjectID, secret),
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   int(subjectCookieTTL / time.Second),
+		Expires:  expiresAt,
+	})
+}
+
+// ReadSubjectCookie reads and verifies the stable hosted subject cookie.
+func ReadSubjectCookie(r *http.Request, secret string) (string, bool) {
+	c, err := r.Cookie(subjectCookieName)
+	if err != nil {
+		return "", false
+	}
+	return VerifySubjectID(c.Value, secret)
 }

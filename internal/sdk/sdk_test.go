@@ -2082,7 +2082,7 @@ func TestAcceptUpstream_MainInReview_ForkInReview(t *testing.T) {
 	}
 }
 
-func TestAcceptUpstream_SelfAccept(t *testing.T) {
+func TestAcceptUpstream_SelfAcceptAllowed(t *testing.T) {
 	db := newFakeDB()
 	db.seedItem(fakeItem{ID: "w-1", Title: "Fix bug", Status: "in_review", PostedBy: "alice", EffortLevel: "medium"})
 
@@ -2095,12 +2095,21 @@ func TestAcceptUpstream_SelfAccept(t *testing.T) {
 		}),
 	})
 
-	_, err := c.AcceptUpstream("w-1", "charlie", AcceptInput{})
-	if err == nil {
-		t.Fatal("expected error for self-accept")
+	result, err := c.AcceptUpstream("w-1", "charlie", AcceptInput{Quality: 4, Reliability: 4, Severity: "leaf"})
+	if err != nil {
+		t.Fatalf("AcceptUpstream: %v", err)
 	}
-	if !strings.Contains(err.Error(), "cannot accept your own completion") {
-		t.Errorf("unexpected error: %v", err)
+	if result.Detail.Item.Status != "completed" {
+		t.Errorf("expected completed, got %s", result.Detail.Item.Status)
+	}
+	if db.completions["w-1"].CompletedBy != "charlie" {
+		t.Errorf("expected charlie completion, got %s", db.completions["w-1"].CompletedBy)
+	}
+	if db.completions["w-1"].ValidatedBy != "charlie" {
+		t.Errorf("validated_by = %q, want %q", db.completions["w-1"].ValidatedBy, "charlie")
+	}
+	if db.completions["w-1"].StampID == "" {
+		t.Fatal("expected stamp id to be recorded")
 	}
 }
 

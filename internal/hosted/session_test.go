@@ -29,6 +29,22 @@ func TestSessionStore_CreateAndGet(t *testing.T) {
 	}
 }
 
+func TestSessionStore_CreateWithSubjectAndGet(t *testing.T) {
+	store := NewSessionStore()
+	id, err := store.CreateWithSubject("conn-123", "subject-abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sess, ok := store.Get(id)
+	if !ok {
+		t.Fatal("expected session to exist")
+	}
+	if sess.SubjectID != "subject-abc" {
+		t.Fatalf("SubjectID = %q, want subject-abc", sess.SubjectID)
+	}
+}
+
 func TestSessionStore_GetMissing(t *testing.T) {
 	store := NewSessionStore()
 	_, ok := store.Get("nonexistent")
@@ -301,5 +317,49 @@ func TestSessionStore_Restore(t *testing.T) {
 	}
 	if sess.ConnectionID != "conn-1" {
 		t.Errorf("expected conn-1, got %s", sess.ConnectionID)
+	}
+}
+
+func TestSessionStore_RestoreWithSubject(t *testing.T) {
+	store := NewSessionStore()
+	store.RestoreWithSubject("sess-1", "conn-1", "subject-abc")
+
+	sess, ok := store.Get("sess-1")
+	if !ok {
+		t.Fatal("expected session to exist after restore")
+	}
+	if sess.SubjectID != "subject-abc" {
+		t.Fatalf("SubjectID = %q, want subject-abc", sess.SubjectID)
+	}
+}
+
+func TestSetAndReadSubjectCookie(t *testing.T) {
+	secret := "subject-secret"
+	w := httptest.NewRecorder()
+	SetSubjectCookie(w, "subject-abc", secret)
+
+	cookies := w.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("expected 1 cookie, got %d", len(cookies))
+	}
+	if cookies[0].Name != subjectCookieName {
+		t.Fatalf("cookie.Name = %q, want %q", cookies[0].Name, subjectCookieName)
+	}
+	if cookies[0].MaxAge != int(subjectCookieTTL/time.Second) {
+		t.Fatalf("cookie.MaxAge = %d, want %d", cookies[0].MaxAge, int(subjectCookieTTL/time.Second))
+	}
+	if cookies[0].Expires.IsZero() {
+		t.Fatal("expected persistent subject cookie expiry")
+	}
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.AddCookie(cookies[0])
+
+	got, ok := ReadSubjectCookie(req, secret)
+	if !ok {
+		t.Fatal("expected valid subject cookie")
+	}
+	if got != "subject-abc" {
+		t.Fatalf("ReadSubjectCookie() = %q, want subject-abc", got)
 	}
 }

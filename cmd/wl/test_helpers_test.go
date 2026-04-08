@@ -69,16 +69,27 @@ func commandWithWasteland(upstream string) *cobra.Command {
 }
 
 type fakeCommandClient struct {
-	detailFn  func(string) (*sdk.DetailResult, error)
-	claimFn   func(string) (*sdk.MutationResult, error)
-	unclaimFn func(string) (*sdk.MutationResult, error)
-	doneFn    func(string, string) (*sdk.MutationResult, error)
-	acceptFn  func(string, sdk.AcceptInput) (*sdk.MutationResult, error)
-	rejectFn  func(string, string) (*sdk.MutationResult, error)
-	closeFn   func(string) (*sdk.MutationResult, error)
-	deleteFn  func(string) (*sdk.MutationResult, error)
-	postFn    func(sdk.PostInput) (*sdk.MutationResult, error)
-	updateFn  func(string, *commons.WantedUpdate) (*sdk.MutationResult, error)
+	browseFn         func(commons.BrowseFilter) (*sdk.BrowseResult, error)
+	detailFn         func(string) (*sdk.DetailResult, error)
+	claimFn          func(string) (*sdk.MutationResult, error)
+	unclaimFn        func(string) (*sdk.MutationResult, error)
+	doneFn           func(string, string) (*sdk.MutationResult, error)
+	acceptFn         func(string, sdk.AcceptInput) (*sdk.MutationResult, error)
+	acceptUpstreamFn func(string, string, sdk.AcceptInput) (*sdk.MutationResult, error)
+	rejectFn         func(string, string) (*sdk.MutationResult, error)
+	rejectUpstreamFn func(string, string) error
+	closeFn          func(string) (*sdk.MutationResult, error)
+	closeUpstreamFn  func(string, string) (*sdk.MutationResult, error)
+	deleteFn         func(string) (*sdk.MutationResult, error)
+	postFn           func(sdk.PostInput) (*sdk.MutationResult, error)
+	updateFn         func(string, *commons.WantedUpdate) (*sdk.MutationResult, error)
+}
+
+func (f fakeCommandClient) Browse(filter commons.BrowseFilter) (*sdk.BrowseResult, error) {
+	if f.browseFn != nil {
+		return f.browseFn(filter)
+	}
+	return nil, nil
 }
 
 func (f fakeCommandClient) Detail(wantedID string) (*sdk.DetailResult, error) {
@@ -116,6 +127,13 @@ func (f fakeCommandClient) Accept(wantedID string, input sdk.AcceptInput) (*sdk.
 	return nil, nil
 }
 
+func (f fakeCommandClient) AcceptUpstream(wantedID, submitterHandle string, input sdk.AcceptInput) (*sdk.MutationResult, error) {
+	if f.acceptUpstreamFn != nil {
+		return f.acceptUpstreamFn(wantedID, submitterHandle, input)
+	}
+	return nil, nil
+}
+
 func (f fakeCommandClient) Reject(wantedID, reason string) (*sdk.MutationResult, error) {
 	if f.rejectFn != nil {
 		return f.rejectFn(wantedID, reason)
@@ -123,9 +141,23 @@ func (f fakeCommandClient) Reject(wantedID, reason string) (*sdk.MutationResult,
 	return nil, nil
 }
 
+func (f fakeCommandClient) RejectUpstream(wantedID, submitterHandle string) error {
+	if f.rejectUpstreamFn != nil {
+		return f.rejectUpstreamFn(wantedID, submitterHandle)
+	}
+	return nil
+}
+
 func (f fakeCommandClient) Close(wantedID string) (*sdk.MutationResult, error) {
 	if f.closeFn != nil {
 		return f.closeFn(wantedID)
+	}
+	return nil, nil
+}
+
+func (f fakeCommandClient) CloseUpstream(wantedID, submitterHandle string) (*sdk.MutationResult, error) {
+	if f.closeUpstreamFn != nil {
+		return f.closeUpstreamFn(wantedID, submitterHandle)
 	}
 	return nil, nil
 }

@@ -743,10 +743,15 @@ func TestRunServe_LocalRemoteAndHostedPaths(t *testing.T) {
 		cmd := &cobra.Command{}
 		cmd.Flags().Int("port", 8999, "")
 		cmd.Flags().Bool("dev", false, "")
-		t.Setenv("NANGO_SECRET_KEY", "")
 		t.Setenv("WL_SESSION_SECRET", "")
+		t.Setenv("WL_AUTH_SUBJECT_SECRET", "")
+		t.Setenv("DOLTHUB_AUTH_BASE_URL", "")
+		t.Setenv("DOLTHUB_AUTH_TENANT_ID", "")
+		t.Setenv("DOLTHUB_AUTH_ENVIRONMENT", "")
+		t.Setenv("DOLTHUB_AUTH_KEY_ID", "")
+		t.Setenv("DOLTHUB_AUTH_SHARED_SECRET", "")
 		err := runServeHosted(cmd, io.Discard, io.Discard)
-		if err == nil || !strings.Contains(err.Error(), "NANGO_SECRET_KEY") {
+		if err == nil || !strings.Contains(err.Error(), "WL_SESSION_SECRET") {
 			t.Fatalf("err = %v", err)
 		}
 	})
@@ -755,8 +760,14 @@ func TestRunServe_LocalRemoteAndHostedPaths(t *testing.T) {
 		cmd := &cobra.Command{}
 		cmd.Flags().Int("port", 8124, "")
 		cmd.Flags().Bool("dev", false, "")
-		t.Setenv("NANGO_SECRET_KEY", "secret")
 		t.Setenv("WL_SESSION_SECRET", "session")
+		t.Setenv("WL_AUTH_SUBJECT_SECRET", "subject")
+		t.Setenv("WL_ENVIRONMENT", "staging")
+		t.Setenv("DOLTHUB_AUTH_BASE_URL", "https://auth.example")
+		t.Setenv("DOLTHUB_AUTH_TENANT_ID", "tenant-dev")
+		t.Setenv("DOLTHUB_AUTH_ENVIRONMENT", "staging")
+		t.Setenv("DOLTHUB_AUTH_KEY_ID", "current-key")
+		t.Setenv("DOLTHUB_AUTH_SHARED_SECRET", "current-secret")
 		withHostedPublicDBOverride(t, func() commons.DB {
 			return scriptedDB{
 				queryFunc: func(string, string) (string, error) { return "", nil },
@@ -771,6 +782,25 @@ func TestRunServe_LocalRemoteAndHostedPaths(t *testing.T) {
 
 		if err := runServeHosted(cmd, io.Discard, io.Discard); err != nil {
 			t.Fatalf("runServeHosted() error = %v", err)
+		}
+	})
+
+	t.Run("hosted auth environment mismatch", func(t *testing.T) {
+		cmd := &cobra.Command{}
+		cmd.Flags().Int("port", 8124, "")
+		cmd.Flags().Bool("dev", false, "")
+		t.Setenv("WL_SESSION_SECRET", "session")
+		t.Setenv("WL_AUTH_SUBJECT_SECRET", "subject")
+		t.Setenv("WL_ENVIRONMENT", "staging")
+		t.Setenv("DOLTHUB_AUTH_BASE_URL", "https://auth.example")
+		t.Setenv("DOLTHUB_AUTH_TENANT_ID", "tenant-dev")
+		t.Setenv("DOLTHUB_AUTH_ENVIRONMENT", "production")
+		t.Setenv("DOLTHUB_AUTH_KEY_ID", "current-key")
+		t.Setenv("DOLTHUB_AUTH_SHARED_SECRET", "current-secret")
+
+		err := runServeHosted(cmd, io.Discard, io.Discard)
+		if err == nil || !strings.Contains(err.Error(), "must match DOLTHUB_AUTH_ENVIRONMENT") {
+			t.Fatalf("err = %v", err)
 		}
 	})
 }

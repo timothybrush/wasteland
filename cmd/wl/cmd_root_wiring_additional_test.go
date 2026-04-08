@@ -276,8 +276,14 @@ func TestTUIAndServeCommand_Wiring(t *testing.T) {
 	})
 
 	t.Run("serve hosted", func(t *testing.T) {
-		t.Setenv("NANGO_SECRET_KEY", "secret")
 		t.Setenv("WL_SESSION_SECRET", "session")
+		t.Setenv("WL_AUTH_SUBJECT_SECRET", "subject")
+		t.Setenv("WL_ENVIRONMENT", "staging")
+		t.Setenv("DOLTHUB_AUTH_BASE_URL", "https://auth.example")
+		t.Setenv("DOLTHUB_AUTH_TENANT_ID", "tenant-dev")
+		t.Setenv("DOLTHUB_AUTH_ENVIRONMENT", "staging")
+		t.Setenv("DOLTHUB_AUTH_KEY_ID", "current-key")
+		t.Setenv("DOLTHUB_AUTH_SHARED_SECRET", "current-secret")
 		withHostedPublicDBOverride(t, func() commons.DB { return scriptedDB{} })
 		withPendingWantedStatesOverride(t, func(string, string, string) (map[string][]remote.PendingWantedState, error) {
 			return map[string][]remote.PendingWantedState{}, nil

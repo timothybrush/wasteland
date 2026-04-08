@@ -274,6 +274,99 @@ func TestRunReject_Close_Unclaim_Delete_Update_Post(t *testing.T) {
 	})
 }
 
+func TestRunAcceptUpstream_RejectUpstream_CloseUpstream(t *testing.T) {
+	saveHandlerConfig(t)
+	withResolveWantedArgOverride(t, func(_ *federation.Config, id string) (string, error) { return id, nil })
+
+	t.Run("accept-upstream", func(t *testing.T) {
+		withCommandClientOverride(t, func(_ *federation.Config, _ bool) (commandClient, error) {
+			return fakeCommandClient{
+				acceptUpstreamFn: func(wantedID, submitterHandle string, input sdk.AcceptInput) (*sdk.MutationResult, error) {
+					if wantedID != "w-123" || submitterHandle != "charlie" {
+						t.Fatalf("wantedID=%q submitter=%q", wantedID, submitterHandle)
+					}
+					if input.Quality != 4 || input.Reliability != 4 || input.Severity != "branch" {
+						t.Fatalf("input = %+v", input)
+					}
+					if len(input.SkillTags) != 2 || input.SkillTags[0] != "go" || input.Message != "solid work" {
+						t.Fatalf("input = %+v", input)
+					}
+					return &sdk.MutationResult{
+						Detail: &sdk.DetailResult{
+							Item: &commons.WantedItem{ID: wantedID, Title: "Fix auth", Status: "completed"},
+						},
+					}, nil
+				},
+			}, nil
+		})
+
+		var stdout bytes.Buffer
+		if err := runAcceptUpstream(commandWithWasteland("hop/wl-commons"), &stdout, io.Discard, "w-123", "charlie", 4, 0, "branch", "go, auth", "solid work", false); err != nil {
+			t.Fatalf("runAcceptUpstream() error = %v", err)
+		}
+		for _, want := range []string{"Accepted upstream submission for w-123", "Submitter: charlie", "Quality: 4, Reliability: 4", "Skills: go, auth"} {
+			if !strings.Contains(stdout.String(), want) {
+				t.Fatalf("stdout missing %q in %q", want, stdout.String())
+			}
+		}
+	})
+
+	t.Run("reject-upstream", func(t *testing.T) {
+		withCommandClientOverride(t, func(_ *federation.Config, _ bool) (commandClient, error) {
+			return fakeCommandClient{
+				rejectUpstreamFn: func(wantedID, submitterHandle string) error {
+					if wantedID != "w-456" || submitterHandle != "dana" {
+						t.Fatalf("wantedID=%q submitter=%q", wantedID, submitterHandle)
+					}
+					return nil
+				},
+			}, nil
+		})
+
+		var stdout bytes.Buffer
+		if err := runRejectUpstream(commandWithWasteland("hop/wl-commons"), &stdout, io.Discard, "w-456", "dana"); err != nil {
+			t.Fatalf("runRejectUpstream() error = %v", err)
+		}
+		for _, want := range []string{"Rejected upstream submission for w-456", "Submitter: dana", "wl pending w-456"} {
+			if !strings.Contains(stdout.String(), want) {
+				t.Fatalf("stdout missing %q in %q", want, stdout.String())
+			}
+		}
+	})
+
+	t.Run("close-upstream", func(t *testing.T) {
+		var gotNoPush bool
+		withCommandClientOverride(t, func(_ *federation.Config, noPush bool) (commandClient, error) {
+			gotNoPush = noPush
+			return fakeCommandClient{
+				closeUpstreamFn: func(wantedID, submitterHandle string) (*sdk.MutationResult, error) {
+					if wantedID != "w-789" || submitterHandle != "erin" {
+						t.Fatalf("wantedID=%q submitter=%q", wantedID, submitterHandle)
+					}
+					return &sdk.MutationResult{
+						Detail: &sdk.DetailResult{
+							Item: &commons.WantedItem{ID: wantedID, Title: "Fix auth", Status: "completed"},
+						},
+					}, nil
+				},
+			}, nil
+		})
+
+		var stdout bytes.Buffer
+		if err := runCloseUpstream(commandWithWasteland("hop/wl-commons"), &stdout, io.Discard, "w-789", "erin", true); err != nil {
+			t.Fatalf("runCloseUpstream() error = %v", err)
+		}
+		if !gotNoPush {
+			t.Fatal("noPush was not forwarded")
+		}
+		for _, want := range []string{"Closed upstream submission for w-789", "Submitter: erin", "wl status w-789"} {
+			if !strings.Contains(stdout.String(), want) {
+				t.Fatalf("stdout missing %q in %q", want, stdout.String())
+			}
+		}
+	})
+}
+
 func TestRunClose_ErrorPaths(t *testing.T) {
 	saveHandlerConfig(t)
 

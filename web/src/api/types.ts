@@ -152,18 +152,61 @@ export interface AuthStatusResponse {
   environment?: string;
 }
 
-export interface ConnectSessionResponse {
-  token: string;
-  integration_id: string;
-}
-
-export interface ConnectInput {
-  connection_id: string;
+export interface ConnectSessionInput {
   rig_handle: string;
   fork_org: string;
   fork_db: string;
   upstream: string;
   mode?: string;
+  signing?: boolean;
+  display_name?: string;
+  email?: string;
+}
+
+export interface ConnectSessionResponse {
+  auth_service_base_url: string;
+  connect_token: string;
+  redeem_secret: string;
+  expires_at: string;
+}
+
+export interface ConnectTokenMetadataWasteland {
+  upstream: string;
+  fork_org: string;
+  fork_db: string;
+  mode: string;
+  signing: boolean;
+}
+
+export interface ConnectTokenMetadata {
+  rig_handle: string;
+  wastelands: ConnectTokenMetadataWasteland[];
+}
+
+export interface RedeemConnectTokenInput {
+  auth_service_base_url: string;
+  connect_token: string;
+  redeem_secret: string;
+  api_key: string;
+  metadata: ConnectTokenMetadata;
+}
+
+export interface RedeemConnectTokenResponse {
+  connection_id: string;
+  status: string;
+  last_validated_at?: string;
+}
+
+export interface RedeemConnectTokenErrorResponse {
+  error_code?: string;
+  user_message?: string;
+  retryable?: boolean;
+  request_id?: string;
+}
+
+export interface ConnectInput {
+  connection_id: string;
+  upstream?: string;
   display_name?: string;
   email?: string;
 }
@@ -178,6 +221,7 @@ export interface JoinInput {
   fork_db: string;
   upstream: string;
   mode?: string;
+  signing?: boolean;
   display_name?: string;
   email?: string;
 }

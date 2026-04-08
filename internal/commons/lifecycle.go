@@ -157,7 +157,7 @@ func CanPerformTransition(item *WantedItem, t Transition, actor string) bool {
 	case TransitionDone:
 		return item.ClaimedBy == actor
 	case TransitionAccept:
-		return (isPoster || isAdmin) && item.ClaimedBy != actor
+		return isPoster || isAdmin
 	case TransitionReject:
 		return isPoster || isAdmin
 	case TransitionClose:

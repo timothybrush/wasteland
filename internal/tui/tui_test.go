@@ -357,8 +357,8 @@ func TestDetail_DoneKey_OpensDoneForm(t *testing.T) {
 }
 
 func TestDetail_AcceptKey_OpensAcceptForm(t *testing.T) {
-	// Item is "in_review", posted by me, claimed by other.
-	m := newDetailForTest("in_review", "test-rig", "other-rig", "wild-west")
+	// Item is "in_review", posted by me, claimed by me.
+	m := newDetailForTest("in_review", "test-rig", "test-rig", "wild-west")
 
 	result, _ := m.Update(keyMsg("a"))
 	m2 := result.(Model)
@@ -1275,14 +1275,14 @@ func TestDetail_DoneKey_InvalidTransition_ShowsError(t *testing.T) {
 }
 
 func TestDetail_AcceptKey_PermissionDenied(t *testing.T) {
-	// Item is "in_review", but I'm the claimant (not poster) — self-accept blocked.
+	// Item is "in_review", but I'm the claimant without poster/admin rights.
 	m := newDetailForTest("in_review", "other-poster", "test-rig", "wild-west")
 
 	result, _ := m.Update(keyMsg("a"))
 	m2 := result.(Model)
 
 	if m2.detail.acceptForm != nil {
-		t.Error("accept form should not open when self-accepting")
+		t.Error("accept form should not open without poster/admin rights")
 	}
 	if !strings.Contains(m2.detail.result, "permission denied") {
 		t.Errorf("result should contain permission denied, got: %q", m2.detail.result)

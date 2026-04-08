@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/gastownhall/wasteland/internal/backend"
 	"github.com/gastownhall/wasteland/internal/commons"
 	"github.com/gastownhall/wasteland/internal/ctxutil"
+	"github.com/gastownhall/wasteland/internal/dolthubauth"
 	"github.com/gastownhall/wasteland/internal/federation"
 	"github.com/gastownhall/wasteland/internal/hosted"
 	"github.com/gastownhall/wasteland/internal/observability"
@@ -103,7 +105,8 @@ func newServeCmd(stdout, stderr io.Writer) *cobra.Command {
 	}
 	cmd.Flags().Int("port", 8999, "Port to listen on")
 	cmd.Flags().Bool("dev", false, "Enable CORS for development (Vite proxy)")
-	cmd.Flags().Bool("hosted", false, "Run in multi-tenant hosted mode (Nango)")
+	cmd.Flags().Bool("hosted", false, "Run in multi-tenant hosted mode")
+	cmd.AddCommand(newServeAuthCmd(stdout, stderr))
 	return cmd
 }
 
@@ -117,6 +120,13 @@ func resolvePort(cmd *cobra.Command) int {
 		}
 	}
 	return port
+}
+
+func resolveServeEnvironment(defaultEnvironment string) string {
+	if environment := strings.TrimSpace(os.Getenv("WL_ENVIRONMENT")); environment != "" {
+		return environment
+	}
+	return defaultEnvironment
 }
 
 // listenAndServeGraceful starts the server and shuts down gracefully on
@@ -162,11 +172,13 @@ func runServe(cmd *cobra.Command, stdout, stderr io.Writer) error {
 	logger := slog.New(slog.NewJSONHandler(stdout, nil))
 	slog.SetDefault(logger)
 
+	environment := resolveServeEnvironment("self-sovereign")
+
 	shutdownTelemetry, telemetryEnabled, err := observability.Init(context.Background(), observability.Config{
 		ServiceName:      "wasteland-self-sovereign",
 		ServiceNamespace: "wasteland",
 		ServiceVersion:   version,
-		Environment:      "self-sovereign",
+		Environment:      environment,
 	})
 	if err != nil {
 		slog.Warn("otel init failed", "error", err)
@@ -180,7 +192,7 @@ func runServe(cmd *cobra.Command, stdout, stderr io.Writer) error {
 		}()
 	}
 
-	initSentry("self-sovereign")
+	initSentry(environment)
 	defer sentry.Flush(2 * time.Second)
 
 	port := resolvePort(cmd)
@@ -299,7 +311,7 @@ func runServe(cmd *cobra.Command, stdout, stderr io.Writer) error {
 	})
 
 	server := newSelfHostedAPIServer(client)
-	server.SetEnvironment("self-sovereign")
+	server.SetEnvironment(environment)
 
 	scoreboardCache := api.NewScoreboardCache(db, 5*time.Minute)
 	server.SetScoreboard(scoreboardCache)
@@ -329,7 +341,7 @@ func runServe(cmd *cobra.Command, stdout, stderr io.Writer) error {
 	}
 
 	addr := fmt.Sprintf(":%d", port)
-	slog.Info("server started", "mode", "self-sovereign", "addr", addr)
+	slog.Info("server started", "mode", "self-sovereign", "environment", environment, "addr", addr)
 	srv := &http.Server{Addr: addr, Handler: handler, MaxHeaderBytes: 1 << 20} //nolint:gosec // bind addr is user-controlled via --port flag
 	return serveListen(srv)
 }
@@ -341,10 +353,7 @@ func runServeHosted(cmd *cobra.Command, stdout, _ io.Writer) error {
 	port := resolvePort(cmd)
 	devMode, _ := cmd.Flags().GetBool("dev")
 
-	environment := os.Getenv("WL_ENVIRONMENT")
-	if environment == "" {
-		environment = "production"
-	}
+	environment := resolveServeEnvironment("production")
 
 	shutdownTelemetry, telemetryEnabled, err := observability.Init(context.Background(), observability.Config{
 		ServiceName:      "wasteland-hosted",
@@ -367,31 +376,48 @@ func runServeHosted(cmd *cobra.Command, stdout, _ io.Writer) error {
 	initSentry(environment)
 	defer sentry.Flush(2 * time.Second)
 
-	// Read required env vars.
-	nangoSecretKey := os.Getenv("NANGO_SECRET_KEY")
-	if nangoSecretKey == "" {
-		return fmt.Errorf("NANGO_SECRET_KEY environment variable is required for hosted mode")
-	}
 	sessionSecret := os.Getenv("WL_SESSION_SECRET")
 	if sessionSecret == "" {
 		return fmt.Errorf("WL_SESSION_SECRET environment variable is required for hosted mode")
 	}
-
-	// Optional env vars with defaults.
-	nangoBaseURL := os.Getenv("NANGO_BASE_URL")
-	nangoIntegrationID := os.Getenv("NANGO_INTEGRATION_ID")
-
-	// Build Nango client.
-	nangoCfg := hosted.NangoConfig{
-		BaseURL:       nangoBaseURL,
-		SecretKey:     nangoSecretKey,
-		IntegrationID: nangoIntegrationID,
+	subjectSecret := os.Getenv("WL_AUTH_SUBJECT_SECRET")
+	if subjectSecret == "" {
+		return fmt.Errorf("WL_AUTH_SUBJECT_SECRET environment variable is required for hosted mode")
 	}
-	nangoClient := hosted.NewNangoClient(nangoCfg)
+	authBaseURL := os.Getenv("DOLTHUB_AUTH_BASE_URL")
+	if authBaseURL == "" {
+		return fmt.Errorf("DOLTHUB_AUTH_BASE_URL environment variable is required for hosted mode")
+	}
+	authTenantID := os.Getenv("DOLTHUB_AUTH_TENANT_ID")
+	if authTenantID == "" {
+		return fmt.Errorf("DOLTHUB_AUTH_TENANT_ID environment variable is required for hosted mode")
+	}
+	authEnvironment := strings.TrimSpace(os.Getenv("DOLTHUB_AUTH_ENVIRONMENT"))
+	if authEnvironment == "" {
+		return fmt.Errorf("DOLTHUB_AUTH_ENVIRONMENT environment variable is required for hosted mode")
+	}
+	if authEnvironment != environment {
+		return fmt.Errorf("WL_ENVIRONMENT (%s) must match DOLTHUB_AUTH_ENVIRONMENT (%s) for hosted mode", environment, authEnvironment)
+	}
+	authKeyID := os.Getenv("DOLTHUB_AUTH_KEY_ID")
+	if authKeyID == "" {
+		return fmt.Errorf("DOLTHUB_AUTH_KEY_ID environment variable is required for hosted mode")
+	}
+	authSharedSecret := os.Getenv("DOLTHUB_AUTH_SHARED_SECRET")
+	if authSharedSecret == "" {
+		return fmt.Errorf("DOLTHUB_AUTH_SHARED_SECRET environment variable is required for hosted mode")
+	}
+	authClient := dolthubauth.NewClient(dolthubauth.ClientConfig{
+		BaseURL:      authBaseURL,
+		TenantID:     authTenantID,
+		Environment:  authEnvironment,
+		KeyID:        authKeyID,
+		SharedSecret: authSharedSecret,
+	})
 
 	// Build session store and workspace resolver.
 	sessions := hosted.NewSessionStore()
-	resolver := hosted.NewWorkspaceResolver(nangoClient, sessions)
+	resolver := hosted.NewAuthServiceWorkspaceResolver(authClient, sessions)
 	defer resolver.Stop()
 
 	// Build the API server with hosted workspace resolution.
@@ -438,7 +464,7 @@ func runServeHosted(cmd *cobra.Command, stdout, _ io.Writer) error {
 	apiServer.SetPublicClient(anonClient)
 
 	// Build the hosted server and compose handlers.
-	hostedServer := hosted.NewServer(resolver, sessions, nangoClient, sessionSecret, environment)
+	hostedServer := hosted.NewAuthServiceServer(resolver, sessions, authClient, sessionSecret, subjectSecret, environment)
 
 	hostedRateLimiter := api.NewRateLimiter(120, 120, time.Minute)
 	defer hostedRateLimiter.Stop()
@@ -447,14 +473,14 @@ func runServeHosted(cmd *cobra.Command, stdout, _ io.Writer) error {
 		observability.BrowserTraceIngressPath: 1 << 20,
 	})
 	sentryMiddleware := sentryhttp.New(sentryhttp.Options{Repanic: true})
-	handler := sentryMiddleware.Handle(observability.NewHTTPHandler(api.RequestLog(logger)(api.SecurityHeaders(generalRL(bodyLimit(hostedServer.Handler(apiServer, web.Assets)))))))
+	handler := sentryMiddleware.Handle(observability.NewHTTPHandler(api.RequestLog(logger)(api.SecurityHeadersWithConnectSrc(generalRL(bodyLimit(hostedServer.Handler(apiServer, web.Assets))), authBaseURL))))
 	if devMode {
 		handler = api.CORSMiddleware(handler)
 	}
 
 	addr := fmt.Sprintf(":%d", port)
 	slog.Info("server started", "mode", "hosted", "addr", addr)
-	slog.Info("nango configured", "integration_id", nangoClient.IntegrationID())
+	slog.Info("dolthub auth configured", "base_url", authBaseURL, "tenant_id", authTenantID)
 	srv := &http.Server{Addr: addr, Handler: handler, MaxHeaderBytes: 1 << 20} //nolint:gosec // bind addr is user-controlled via --port flag
 	return serveListen(srv)
 }
