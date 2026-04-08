@@ -12,6 +12,8 @@ import (
 	"github.com/gastownhall/wasteland/internal/api"
 )
 
+const telemetryTestSecret = "test-session-secret"
+
 func TestHandler_PublicTelemetryRoutesBypassAuth(t *testing.T) {
 	t.Setenv("WL_ENVIRONMENT", "wrong-env")
 	t.Setenv("WL_BROWSER_OTEL_TRACES_SAMPLE_RATIO", "0.5")
@@ -28,7 +30,7 @@ func TestHandler_PublicTelemetryRoutesBypassAuth(t *testing.T) {
 	defer collector.Close()
 	t.Setenv("WL_BROWSER_OTLP_TRACES_TARGET", collector.URL+"/v1/traces")
 
-	hostedServer := NewServer(nil, nil, nil, testSecret, "staging")
+	hostedServer := NewAuthServiceServer(nil, nil, nil, telemetryTestSecret, telemetryTestSecret, "staging")
 	apiServer := api.New(nil)
 	apiServer.SetEnvironment("staging")
 	ts := httptest.NewServer(hostedServer.Handler(apiServer, fstest.MapFS{
