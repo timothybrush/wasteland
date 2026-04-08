@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -62,6 +63,24 @@ func serviceAuthBaseString(
 		subjectID,
 		connectionID,
 	}, "\n")
+}
+
+func serviceAuthRequestTarget(u *url.URL) string {
+	if u == nil {
+		return "/"
+	}
+	path := u.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+	if u.RawQuery == "" {
+		return path
+	}
+	values, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		return path + "?" + u.RawQuery
+	}
+	return path + "?" + values.Encode()
 }
 
 func signServiceRequest(
@@ -155,7 +174,7 @@ func verifyServiceRequest(
 		timestampRaw,
 		nonce,
 		r.Method,
-		r.URL.RequestURI(),
+		serviceAuthRequestTarget(r.URL),
 		bodySHA256(body),
 		scope.TenantID,
 		scope.Environment,

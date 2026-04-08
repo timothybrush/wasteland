@@ -312,7 +312,7 @@ func signedServiceRequest(t *testing.T, method, path string, body []byte, subjec
 		now,
 		nonce,
 		method,
-		path,
+		serviceAuthRequestTarget(req.URL),
 		body,
 		"tenant-dev",
 		"dev",
@@ -432,7 +432,7 @@ func TestServerProxyStripsInternalServiceHeadersBeforeForwarding(t *testing.T) {
 		now,
 		nonce,
 		http.MethodGet,
-		req.URL.RequestURI(),
+		serviceAuthRequestTarget(req.URL),
 		nil,
 		cfg.TenantID,
 		cfg.Environment,
@@ -479,5 +479,82 @@ func TestServerProxyStripsInternalServiceHeadersBeforeForwarding(t *testing.T) {
 	}
 	if got := gotReq.Header.Get("X-Request-Id"); got != "req-123" {
 		t.Fatalf("X-Request-Id = %q", got)
+	}
+}
+
+func TestServerProxyPreservesEscapedBranchNames(t *testing.T) {
+	now := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
+	var gotReq *http.Request
+
+	cfg := validConfig()
+	srv, err := NewServer(cfg, Dependencies{
+		Store: proxyStore{
+			apiKey: "stored-api-key",
+			conn: &Connection{
+				ConnectionID: "conn-1",
+				TenantID:     cfg.TenantID,
+				Environment:  cfg.Environment,
+				SubjectID:    "subject-1",
+				Metadata:     UserMetadata{RigHandle: "alice"},
+				Status:       StatusActive,
+				CreatedAt:    now,
+				UpdatedAt:    now,
+			},
+		},
+		KeyManager: fakeCipher{},
+		Now:        func() time.Time { return now },
+		ProxyHTTPClient: &http.Client{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				gotReq = req.Clone(req.Context())
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+				}, nil
+			}),
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/proxy/api/alice/wl-commons/write/main/wl%2Fregister%2Falice?q=SELECT%201",
+		nil,
+	)
+	nonce := "nonce-1"
+	timestamp, signature := signServiceRequest(
+		cfg.CurrentSharedSecret,
+		cfg.CurrentKeyID,
+		now,
+		nonce,
+		http.MethodPost,
+		serviceAuthRequestTarget(req.URL),
+		nil,
+		cfg.TenantID,
+		cfg.Environment,
+		"subject-1",
+		"conn-1",
+	)
+	req.Header.Set(headerAuthorization, serviceAuthPrefix+cfg.CurrentKeyID+":"+signature)
+	req.Header.Set(headerServiceTimestamp, timestamp)
+	req.Header.Set(headerServiceNonce, nonce)
+	req.Header.Set(headerServiceBodySHA, bodySHA256(nil))
+	req.Header.Set(headerAuthTenantID, cfg.TenantID)
+	req.Header.Set(headerAuthEnvironment, cfg.Environment)
+	req.Header.Set(headerAuthSubjectID, "subject-1")
+	req.Header.Set(headerAuthConnectionID, "conn-1")
+
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if gotReq == nil {
+		t.Fatal("expected upstream proxy request")
+	}
+	if got := gotReq.URL.EscapedPath(); got != "/api/v1alpha1/alice/wl-commons/write/main/wl%2Fregister%2Falice" {
+		t.Fatalf("EscapedPath = %q", got)
 	}
 }

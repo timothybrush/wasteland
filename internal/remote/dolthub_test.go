@@ -115,6 +115,34 @@ func TestDoltHubProvider_ForkDispatch_WithSessionToken(t *testing.T) {
 	}
 }
 
+func TestDoltHubProvider_Fork_SkipsCreationWhenForkAlreadyExists(t *testing.T) {
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/alice-dev/wl-commons/main") {
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"query_execution_status":"Success"}`))
+			return
+		}
+		t.Fatalf("Fork should not attempt creation when the fork already exists: %s %s", r.Method, r.URL.String())
+	}))
+	defer apiServer.Close()
+
+	oldAPI := dolthubAPIBase
+	oldGraphQL := dolthubGraphQLURL
+	dolthubAPIBase = apiServer.URL
+	dolthubGraphQLURL = apiServer.URL + "/graphql"
+	defer func() {
+		dolthubAPIBase = oldAPI
+		dolthubGraphQLURL = oldGraphQL
+	}()
+
+	t.Setenv("DOLTHUB_SESSION_TOKEN", "my-session")
+
+	provider := NewDoltHubProvider("api-token")
+	if err := provider.Fork("steveyegge", "wl-commons", "alice-dev"); err != nil {
+		t.Fatalf("Fork should skip creation when the fork already exists: %v", err)
+	}
+}
+
 func TestDoltHubProvider_ForkREST_Success(t *testing.T) {
 	// REST fork: POST returns operation_name, poll returns success.
 	pollCount := 0
@@ -198,6 +226,55 @@ func TestDoltHubProvider_ForkREST_PollStatusSuccess(t *testing.T) {
 	err := provider.forkREST("steveyegge", "wl-commons", "alice-dev")
 	if err != nil {
 		t.Errorf("forkREST should succeed on status-based completion: %v", err)
+	}
+}
+
+func TestDoltHubProvider_ForkREST_PollErrorFallsBackToDatabaseExists(t *testing.T) {
+	oldInitialBackoff := forkPollInitialBackoff
+	oldMaxBackoff := forkPollMaxBackoff
+	oldTimeout := forkPollTimeout
+	forkPollInitialBackoff = time.Millisecond
+	forkPollMaxBackoff = 2 * time.Millisecond
+	forkPollTimeout = 20 * time.Millisecond
+	defer func() {
+		forkPollInitialBackoff = oldInitialBackoff
+		forkPollMaxBackoff = oldMaxBackoff
+		forkPollTimeout = oldTimeout
+	}()
+
+	var existsChecks atomic.Int32
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/fork") {
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"status":"Success","operation_name":"fork-op-authz"}`))
+			return
+		}
+		if r.Method == "GET" && r.URL.Path == "/fork" && r.URL.Query().Get("operationName") == "fork-op-authz" {
+			w.WriteHeader(401)
+			_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+			return
+		}
+		if r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/alice-dev/wl-commons/main") {
+			existsChecks.Add(1)
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"query_execution_status":"Success"}`))
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer apiServer.Close()
+
+	oldAPI := dolthubAPIBase
+	dolthubAPIBase = apiServer.URL
+	defer func() { dolthubAPIBase = oldAPI }()
+
+	provider := NewDoltHubProvider("api-token")
+	err := provider.forkREST("steveyegge", "wl-commons", "alice-dev")
+	if err != nil {
+		t.Fatalf("forkREST should succeed when the fork exists after a poll auth error: %v", err)
+	}
+	if existsChecks.Load() == 0 {
+		t.Fatal("expected forkREST to check whether the fork database exists after poll failure")
 	}
 }
 

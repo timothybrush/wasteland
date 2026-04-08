@@ -27,6 +27,12 @@ var dolthubGraphQLURL = "https://www.dolthub.com/graphql"
 // dolthubAPIBase is the DoltHub REST API base URL. Var so tests can override.
 var dolthubAPIBase = "https://www.dolthub.com/api/v1alpha1"
 
+var (
+	forkPollInitialBackoff = 500 * time.Millisecond
+	forkPollMaxBackoff     = 8 * time.Second
+	forkPollTimeout        = 2 * time.Minute
+)
+
 const dolthubRemoteBase = "https://doltremoteapi.dolthub.com"
 
 // dolthubRepoBase is the DoltHub web base URL. Var so tests can override.
@@ -112,6 +118,10 @@ func (d *DoltHubProvider) DatabaseURL(org, db string) string {
 // back to checking if the fork already exists and returns a ForkRequiredError
 // if not.
 func (d *DoltHubProvider) Fork(fromOrg, fromDB, toOrg string) error {
+	if d.databaseExists(toOrg, fromDB) {
+		return nil
+	}
+
 	sessionToken := os.Getenv("DOLTHUB_SESSION_TOKEN")
 	if sessionToken != "" {
 		return d.forkGraphQL(fromOrg, fromDB, toOrg, sessionToken)
@@ -187,8 +197,8 @@ func (d *DoltHubProvider) forkREST(fromOrg, fromDB, toOrg string) error {
 // since the fork may complete with a response format we don't recognize.
 func (d *DoltHubProvider) pollForkOperation(operationName, forkOrg, forkDB string) error {
 	client := d.getClient(30 * time.Second)
-	backoff := 500 * time.Millisecond
-	deadline := time.Now().Add(2 * time.Minute)
+	backoff := forkPollInitialBackoff
+	deadline := time.Now().Add(forkPollTimeout)
 
 	for time.Now().Before(deadline) {
 		select {
@@ -215,7 +225,21 @@ func (d *DoltHubProvider) pollForkOperation(operationName, forkOrg, forkDB strin
 		body, err := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		if err != nil {
-			if backoff < 8*time.Second {
+			if backoff < forkPollMaxBackoff {
+				backoff *= 2
+			}
+			continue
+		}
+
+		// Some DoltHub environments return an auth/policy error for the poll
+		// endpoint even though the fork itself succeeds. If the forked database
+		// already exists, treat the operation as complete rather than waiting for
+		// the full timeout.
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			if d.databaseExists(forkOrg, forkDB) {
+				return nil
+			}
+			if backoff < forkPollMaxBackoff {
 				backoff *= 2
 			}
 			continue
@@ -238,7 +262,7 @@ func (d *DoltHubProvider) pollForkOperation(operationName, forkOrg, forkDB strin
 			}
 		}
 
-		if backoff < 8*time.Second {
+		if backoff < forkPollMaxBackoff {
 			backoff *= 2
 		}
 	}

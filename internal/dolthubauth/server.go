@@ -563,7 +563,8 @@ func (s *Server) handleProxyGraphQL(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleProxyAPI(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.PathValue("path"), "/")
+	path := strings.TrimPrefix(r.URL.EscapedPath(), "/v1/proxy/api")
+	path = strings.TrimPrefix(path, "/")
 	target := "https://www.dolthub.com/api/v1alpha1"
 	if path != "" {
 		target += "/" + path
