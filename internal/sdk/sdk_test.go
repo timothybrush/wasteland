@@ -2266,6 +2266,74 @@ func TestAcceptUpstream_MultipleSubmitters_PickOne(t *testing.T) {
 	}
 }
 
+func TestAcceptUpstreamSelected_PRURLDisambiguatesSameRig(t *testing.T) {
+	db := newFakeDB()
+	db.seedItem(fakeItem{ID: "w-1", Title: "Fix bug", Status: "open", PostedBy: "alice", EffortLevel: "medium"})
+
+	c := New(ClientConfig{
+		DB:        db,
+		RigHandle: "alice",
+		Mode:      "wild-west",
+		ListPendingItems: pendingItems(map[string][]PendingItem{
+			"w-1": {
+				{
+					RigHandle:   "charlie",
+					Status:      "in_review",
+					CompletedBy: "charlie",
+					Evidence:    "proof-a",
+					PRURL:       "https://dolthub.example/pulls/41",
+				},
+				{
+					RigHandle:   "charlie",
+					Status:      "in_review",
+					CompletedBy: "charlie",
+					Evidence:    "proof-b",
+					PRURL:       "https://dolthub.example/pulls/42",
+				},
+			},
+		}),
+	})
+
+	result, err := c.AcceptUpstreamSelected("w-1", UpstreamSubmissionSelector{
+		RigHandle: "charlie",
+		PRURL:     "https://dolthub.example/pulls/42",
+	}, AcceptInput{})
+	if err != nil {
+		t.Fatalf("AcceptUpstreamSelected() error = %v", err)
+	}
+	if result.Detail == nil || result.Detail.Item == nil {
+		t.Fatal("expected detail in result")
+	}
+	if db.completions["w-1"].Evidence != "proof-b" {
+		t.Fatalf("accepted evidence = %q, want proof-b", db.completions["w-1"].Evidence)
+	}
+}
+
+func TestAcceptUpstream_AmbiguousSameRigRequiresPRURL(t *testing.T) {
+	db := newFakeDB()
+	db.seedItem(fakeItem{ID: "w-1", Title: "Fix bug", Status: "open", PostedBy: "alice", EffortLevel: "medium"})
+
+	c := New(ClientConfig{
+		DB:        db,
+		RigHandle: "alice",
+		Mode:      "wild-west",
+		ListPendingItems: pendingItems(map[string][]PendingItem{
+			"w-1": {
+				{RigHandle: "charlie", Status: "in_review", CompletedBy: "charlie", Evidence: "proof-a", PRURL: "https://dolthub.example/pulls/41"},
+				{RigHandle: "charlie", Status: "in_review", CompletedBy: "charlie", Evidence: "proof-b", PRURL: "https://dolthub.example/pulls/42"},
+			},
+		}),
+	})
+
+	_, err := c.AcceptUpstream("w-1", "charlie", AcceptInput{})
+	if err == nil {
+		t.Fatal("expected ambiguous selector error")
+	}
+	if !strings.Contains(err.Error(), "select by pr_url") {
+		t.Fatalf("AcceptUpstream() error = %v, want select-by-pr_url guidance", err)
+	}
+}
+
 func TestAcceptUpstream_ExistingCompletion_Replaced(t *testing.T) {
 	db := newFakeDB()
 	db.seedItem(fakeItem{ID: "w-1", Title: "Fix bug", Status: "in_review", ClaimedBy: "bob", PostedBy: "alice", EffortLevel: "medium"})

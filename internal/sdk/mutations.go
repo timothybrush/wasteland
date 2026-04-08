@@ -16,6 +16,14 @@ type AcceptInput struct {
 	Message     string
 }
 
+// UpstreamSubmissionSelector identifies one pending upstream submission.
+// RigHandle preserves the existing CLI/API contract; PRURL disambiguates
+// multiple open submissions from the same rig.
+type UpstreamSubmissionSelector struct {
+	RigHandle string
+	PRURL     string
+}
+
 // PostInput holds the parameters for posting a new wanted item.
 type PostInput struct {
 	Title       string
@@ -99,6 +107,12 @@ func (c *Client) Accept(wantedID string, input AcceptInput) (*MutationResult, er
 
 // AcceptUpstream adopts a fork submission, creating a completion and stamp on the poster's branch.
 func (c *Client) AcceptUpstream(wantedID, submitterHandle string, input AcceptInput) (*MutationResult, error) {
+	return c.AcceptUpstreamSelected(wantedID, UpstreamSubmissionSelector{RigHandle: submitterHandle}, input)
+}
+
+// AcceptUpstreamSelected adopts one specific fork submission, creating a
+// completion and stamp on the poster's branch.
+func (c *Client) AcceptUpstreamSelected(wantedID string, selector UpstreamSubmissionSelector, input AcceptInput) (*MutationResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -115,16 +129,9 @@ func (c *Client) AcceptUpstream(wantedID, submitterHandle string, input AcceptIn
 		return nil, fmt.Errorf("listing pending items: %w", err)
 	}
 
-	items := pending[wantedID]
-	var match *PendingItem
-	for i := range items {
-		if items[i].RigHandle == submitterHandle {
-			match = &items[i]
-			break
-		}
-	}
-	if match == nil {
-		return nil, fmt.Errorf("no pending submission from %s", submitterHandle)
+	match, err := matchUpstreamSubmission(pending[wantedID], selector)
+	if err != nil {
+		return nil, err
 	}
 
 	if match.Status != "in_review" {
@@ -134,6 +141,10 @@ func (c *Client) AcceptUpstream(wantedID, submitterHandle string, input AcceptIn
 		return nil, fmt.Errorf("submission has no completion data")
 	}
 	if match.CompletedBy == c.rigHandle {
+		submitterHandle := selector.RigHandle
+		if submitterHandle == "" {
+			submitterHandle = match.RigHandle
+		}
 		return nil, &commons.ConflictError{
 			Message: fmt.Sprintf("cannot issue a stamp to yourself; use \"wl close-upstream %s %s\"", wantedID, submitterHandle),
 		}
@@ -160,7 +171,13 @@ func (c *Client) AcceptUpstream(wantedID, submitterHandle string, input AcceptIn
 // RejectUpstream declines a fork submission by closing its upstream DoltHub PR.
 // No local state is modified — the item remains in its current status.
 func (c *Client) RejectUpstream(wantedID, submitterHandle string) error {
-	match, err := c.findUpstreamSubmission(wantedID, submitterHandle)
+	return c.RejectUpstreamSelected(wantedID, UpstreamSubmissionSelector{RigHandle: submitterHandle})
+}
+
+// RejectUpstreamSelected declines one fork submission by closing its upstream
+// DoltHub PR. No local state is modified.
+func (c *Client) RejectUpstreamSelected(wantedID string, selector UpstreamSubmissionSelector) error {
+	match, err := c.findUpstreamSubmissionSelected(wantedID, selector)
 	if err != nil {
 		return err
 	}
@@ -176,6 +193,12 @@ func (c *Client) RejectUpstream(wantedID, submitterHandle string) error {
 // CloseUpstream adopts a fork submission without creating a stamp, then closes
 // the upstream DoltHub PR.
 func (c *Client) CloseUpstream(wantedID, submitterHandle string) (*MutationResult, error) {
+	return c.CloseUpstreamSelected(wantedID, UpstreamSubmissionSelector{RigHandle: submitterHandle})
+}
+
+// CloseUpstreamSelected adopts one fork submission without creating a stamp,
+// then closes the upstream DoltHub PR.
+func (c *Client) CloseUpstreamSelected(wantedID string, selector UpstreamSubmissionSelector) (*MutationResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -183,7 +206,7 @@ func (c *Client) CloseUpstream(wantedID, submitterHandle string) (*MutationResul
 		return result, nil
 	}
 
-	match, err := c.findUpstreamSubmission(wantedID, submitterHandle)
+	match, err := c.findUpstreamSubmissionSelected(wantedID, selector)
 	if err != nil {
 		return nil, err
 	}
@@ -211,6 +234,10 @@ func (c *Client) CloseUpstream(wantedID, submitterHandle string) (*MutationResul
 
 // findUpstreamSubmission looks up a pending upstream submission by rig handle.
 func (c *Client) findUpstreamSubmission(wantedID, submitterHandle string) (*PendingItem, error) {
+	return c.findUpstreamSubmissionSelected(wantedID, UpstreamSubmissionSelector{RigHandle: submitterHandle})
+}
+
+func (c *Client) findUpstreamSubmissionSelected(wantedID string, selector UpstreamSubmissionSelector) (*PendingItem, error) {
 	if c.ListPendingItems == nil && c.ListPendingItemsContext == nil {
 		return nil, fmt.Errorf("upstream PR listing not available")
 	}
@@ -218,13 +245,44 @@ func (c *Client) findUpstreamSubmission(wantedID, submitterHandle string) (*Pend
 	if err != nil {
 		return nil, fmt.Errorf("listing pending items: %w", err)
 	}
-	items := pending[wantedID]
+	return matchUpstreamSubmission(pending[wantedID], selector)
+}
+
+func matchUpstreamSubmission(items []PendingItem, selector UpstreamSubmissionSelector) (*PendingItem, error) {
+	if selector.PRURL != "" {
+		for i := range items {
+			if items[i].PRURL != selector.PRURL {
+				continue
+			}
+			if selector.RigHandle != "" && items[i].RigHandle != selector.RigHandle {
+				return nil, fmt.Errorf("pending submission selector mismatch for %s", selector.PRURL)
+			}
+			match := items[i]
+			return &match, nil
+		}
+		if selector.RigHandle != "" {
+			return nil, fmt.Errorf("no pending submission from %s at %s", selector.RigHandle, selector.PRURL)
+		}
+		return nil, fmt.Errorf("no pending submission at %s", selector.PRURL)
+	}
+	if selector.RigHandle == "" {
+		return nil, fmt.Errorf("no pending submission selector provided")
+	}
+	var matches []PendingItem
 	for i := range items {
-		if items[i].RigHandle == submitterHandle {
-			return &items[i], nil
+		if items[i].RigHandle == selector.RigHandle {
+			matches = append(matches, items[i])
 		}
 	}
-	return nil, fmt.Errorf("no pending submission from %s", submitterHandle)
+	switch len(matches) {
+	case 0:
+		return nil, fmt.Errorf("no pending submission from %s", selector.RigHandle)
+	case 1:
+		match := matches[0]
+		return &match, nil
+	default:
+		return nil, fmt.Errorf("multiple pending submissions from %s; select by pr_url", selector.RigHandle)
+	}
 }
 
 // Reject rejects a completion, reverting the item from in_review to claimed.

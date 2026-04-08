@@ -58,6 +58,25 @@ func (wr *AuthServiceWorkspaceResolver) Stop() {
 	}
 }
 
+// ResetCaches clears cached workspaces and pending-item caches.
+func (wr *AuthServiceWorkspaceResolver) ResetCaches() {
+	wr.mu.Lock()
+	wr.cache = make(map[string]*cachedWorkspace)
+	wr.mu.Unlock()
+
+	wr.pendingMu.Lock()
+	caches := make([]*pendingUpstreamCache, 0, len(wr.pendingCache))
+	for _, cache := range wr.pendingCache {
+		caches = append(caches, cache)
+	}
+	wr.pendingCache = make(map[string]*pendingUpstreamCache)
+	wr.pendingMu.Unlock()
+
+	for _, cache := range caches {
+		cache.Stop()
+	}
+}
+
 // Resolve loads the workspace for the provided session.
 func (wr *AuthServiceWorkspaceResolver) Resolve(session *UserSession) (*sdk.Workspace, error) {
 	return wr.ResolveContext(context.Background(), session)

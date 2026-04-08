@@ -362,7 +362,7 @@ func FindBranchForItem(db DB, rigHandle, wantedID string) string {
 
 // ValidStatuses returns the browse filter status cycle.
 func ValidStatuses() []string {
-	return []string{"open", "claimed", "in_review", "completed", ""}
+	return []string{"open", "claimed", "in_review", "completed", "validated", ""}
 }
 
 // ValidTypes returns the browse filter type cycle.

@@ -2,7 +2,7 @@ import type { RefObject } from "react";
 import type { BrowseFilter } from "../api/types";
 import styles from "./FilterBar.module.css";
 
-const statuses = ["", "open", "claimed", "in_review", "completed"];
+const statuses = ["", "open", "claimed", "in_review", "completed", "validated"];
 const types = ["", "feature", "bug", "design", "rfc", "docs", ...(__INFER_ENABLED__ ? ["inference"] : [])];
 const sorts = ["priority", "newest", "alpha"];
 const views = ["mine", "all", "upstream"] as const;

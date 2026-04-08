@@ -32,17 +32,21 @@ import {
 
 let cleanup: () => void;
 
-function mockFetch(handler: (url: string, init?: RequestInit) => Response | object) {
+function mockFetch(
+  handler: (url: string, init?: RequestInit) => Response | object,
+) {
   const original = globalThis.fetch;
-  globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = typeof input === "string" ? input : input.toString();
-    const result = handler(url, init);
-    if (result instanceof Response) return result;
-    return new Response(JSON.stringify(result), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
-  }) as typeof fetch;
+  globalThis.fetch = vi.fn(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const result = handler(url, init);
+      if (result instanceof Response) return result;
+      return new Response(JSON.stringify(result), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+  ) as typeof fetch;
   cleanup = () => {
     globalThis.fetch = original;
   };
@@ -68,7 +72,10 @@ describe("request()", () => {
   });
 
   it("throws ApiError with status and parsed error message on 400", async () => {
-    mockFetch(() => new Response(JSON.stringify({ error: "bad request" }), { status: 400 }));
+    mockFetch(
+      () =>
+        new Response(JSON.stringify({ error: "bad request" }), { status: 400 }),
+    );
     await expect(browse()).rejects.toMatchObject({
       status: 400,
       message: "bad request",
@@ -76,7 +83,13 @@ describe("request()", () => {
   });
 
   it("throws ApiError with statusText on non-JSON 500", async () => {
-    mockFetch(() => new Response("Internal Server Error", { status: 500, statusText: "Internal Server Error" }));
+    mockFetch(
+      () =>
+        new Response("Internal Server Error", {
+          status: 500,
+          statusText: "Internal Server Error",
+        }),
+    );
     await expect(browse()).rejects.toMatchObject({
       status: 500,
       message: "Internal Server Error",
@@ -112,7 +125,15 @@ describe("buildQuery()", () => {
   });
 
   it("builds correct query string for full filter", async () => {
-    await browse({ status: "open", type: "bug", priority: 1, project: "x", search: "foo", sort: "alpha", limit: 10 });
+    await browse({
+      status: "open",
+      type: "bug",
+      priority: 1,
+      project: "x",
+      search: "foo",
+      sort: "alpha",
+      limit: 10,
+    });
     const url = vi.mocked(globalThis.fetch).mock.calls[0][0] as string;
     expect(url).toContain("status=open");
     expect(url).toContain("type=bug");
@@ -170,33 +191,42 @@ describe("hosted request headers", () => {
   it("injects X-Impersonate on non-auth requests", async () => {
     setImpersonation("bob");
     await detail("abc");
-    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith("/api/wanted/abc", {
-      headers: new Headers({ "X-Impersonate": "bob" }),
-    });
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith(
+      "/api/wanted/abc",
+      {
+        headers: new Headers({ "X-Impersonate": "bob" }),
+      },
+    );
   });
 
   it("injects both hosted headers on mutations", async () => {
     setActiveUpstream("hop/wl-commons");
     setImpersonation("bob");
     await claim("abc");
-    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith("/api/wanted/abc/claim", {
-      method: "POST",
-      headers: new Headers({
-        "X-Wasteland": "hop/wl-commons",
-        "X-Impersonate": "bob",
-      }),
-    });
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith(
+      "/api/wanted/abc/claim",
+      {
+        method: "POST",
+        headers: new Headers({
+          "X-Wasteland": "hop/wl-commons",
+          "X-Impersonate": "bob",
+        }),
+      },
+    );
   });
 
   it("reloads X-Wasteland from localStorage for writes", async () => {
     localStorage.setItem("wl_active", "hop/wl-commons");
     await claim("abc");
-    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith("/api/wanted/abc/claim", {
-      method: "POST",
-      headers: new Headers({
-        "X-Wasteland": "hop/wl-commons",
-      }),
-    });
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith(
+      "/api/wanted/abc/claim",
+      {
+        method: "POST",
+        headers: new Headers({
+          "X-Wasteland": "hop/wl-commons",
+        }),
+      },
+    );
   });
 
   it("does not inject hosted headers on auth endpoints", async () => {
@@ -204,10 +234,18 @@ describe("hosted request headers", () => {
     setImpersonation("bob");
     await authStatus();
     await leaveWasteland("hop/wl-commons");
-    expect(vi.mocked(globalThis.fetch)).toHaveBeenNthCalledWith(1, "/api/auth/status", undefined);
-    expect(vi.mocked(globalThis.fetch)).toHaveBeenNthCalledWith(2, "/api/auth/wastelands/hop/wl-commons", {
-      method: "DELETE",
-    });
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenNthCalledWith(
+      1,
+      "/api/auth/status",
+      undefined,
+    );
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenNthCalledWith(
+      2,
+      "/api/auth/wastelands/hop/wl-commons",
+      {
+        method: "DELETE",
+      },
+    );
   });
 
   it("injects hosted headers on bootstrap", async () => {
@@ -233,9 +271,12 @@ describe("API functions", () => {
 
   it("detail() calls GET /api/wanted/:id", async () => {
     await detail("abc");
-    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith("/api/wanted/abc", {
-      headers: new Headers(),
-    });
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith(
+      "/api/wanted/abc",
+      {
+        headers: new Headers(),
+      },
+    );
   });
 
   it("dashboard() calls GET /api/dashboard", async () => {
@@ -262,23 +303,29 @@ describe("API functions", () => {
   it("claim() calls POST /api/wanted/:id/claim", async () => {
     setActiveUpstream("hop/wl-commons");
     await claim("abc");
-    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith("/api/wanted/abc/claim", {
-      method: "POST",
-      headers: new Headers({
-        "X-Wasteland": "hop/wl-commons",
-      }),
-    });
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith(
+      "/api/wanted/abc/claim",
+      {
+        method: "POST",
+        headers: new Headers({
+          "X-Wasteland": "hop/wl-commons",
+        }),
+      },
+    );
   });
 
   it("unclaim() calls POST /api/wanted/:id/unclaim", async () => {
     setActiveUpstream("hop/wl-commons");
     await unclaim("abc");
-    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith("/api/wanted/abc/unclaim", {
-      method: "POST",
-      headers: new Headers({
-        "X-Wasteland": "hop/wl-commons",
-      }),
-    });
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith(
+      "/api/wanted/abc/unclaim",
+      {
+        method: "POST",
+        headers: new Headers({
+          "X-Wasteland": "hop/wl-commons",
+        }),
+      },
+    );
   });
 
   it("reject() calls POST with reason", async () => {
@@ -299,12 +346,15 @@ describe("API functions", () => {
   it("close() calls POST /api/wanted/:id/close", async () => {
     setActiveUpstream("hop/wl-commons");
     await close("abc");
-    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith("/api/wanted/abc/close", {
-      method: "POST",
-      headers: new Headers({
-        "X-Wasteland": "hop/wl-commons",
-      }),
-    });
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith(
+      "/api/wanted/abc/close",
+      {
+        method: "POST",
+        headers: new Headers({
+          "X-Wasteland": "hop/wl-commons",
+        }),
+      },
+    );
   });
 
   it("done() calls POST with evidence", async () => {
@@ -318,7 +368,9 @@ describe("API functions", () => {
         "X-Wasteland": "hop/wl-commons",
       }),
     );
-    expect(JSON.parse(call[1]?.body as string)).toEqual({ evidence: "http://evidence" });
+    expect(JSON.parse(call[1]?.body as string)).toEqual({
+      evidence: "http://evidence",
+    });
   });
 
   it("accept() calls POST with stamp data", async () => {
@@ -332,12 +384,22 @@ describe("API functions", () => {
         "X-Wasteland": "hop/wl-commons",
       }),
     );
-    expect(JSON.parse(call[1]?.body as string)).toEqual({ quality: 5, reliability: 4 });
+    expect(JSON.parse(call[1]?.body as string)).toEqual({
+      quality: 5,
+      reliability: 4,
+    });
   });
 
-  it("acceptUpstream() calls POST with rig_handle and stamp data", async () => {
+  it("acceptUpstream() calls POST with selector and stamp data", async () => {
     setActiveUpstream("hop/wl-commons");
-    await acceptUpstream("abc", "charlie", { quality: 5, reliability: 4, severity: "branch" });
+    await acceptUpstream(
+      "abc",
+      {
+        rig_handle: "charlie",
+        pr_url: "https://www.dolthub.com/repositories/org/db/pulls/1",
+      },
+      { quality: 5, reliability: 4, severity: "branch" },
+    );
     const call = vi.mocked(globalThis.fetch).mock.calls[0];
     expect(call[0]).toBe("/api/wanted/abc/accept-upstream");
     expect(call[1]?.method).toBe("POST");
@@ -349,15 +411,19 @@ describe("API functions", () => {
     );
     expect(JSON.parse(call[1]?.body as string)).toEqual({
       rig_handle: "charlie",
+      pr_url: "https://www.dolthub.com/repositories/org/db/pulls/1",
       quality: 5,
       reliability: 4,
       severity: "branch",
     });
   });
 
-  it("rejectUpstream() calls POST with rig_handle", async () => {
+  it("rejectUpstream() calls POST with selector", async () => {
     setActiveUpstream("hop/wl-commons");
-    await rejectUpstream("abc", "charlie");
+    await rejectUpstream("abc", {
+      rig_handle: "charlie",
+      pr_url: "https://www.dolthub.com/repositories/org/db/pulls/1",
+    });
     const call = vi.mocked(globalThis.fetch).mock.calls[0];
     expect(call[0]).toBe("/api/wanted/abc/reject-upstream");
     expect(call[1]?.method).toBe("POST");
@@ -367,12 +433,18 @@ describe("API functions", () => {
         "X-Wasteland": "hop/wl-commons",
       }),
     );
-    expect(JSON.parse(call[1]?.body as string)).toEqual({ rig_handle: "charlie" });
+    expect(JSON.parse(call[1]?.body as string)).toEqual({
+      rig_handle: "charlie",
+      pr_url: "https://www.dolthub.com/repositories/org/db/pulls/1",
+    });
   });
 
-  it("closeUpstream() calls POST with rig_handle", async () => {
+  it("closeUpstream() calls POST with selector", async () => {
     setActiveUpstream("hop/wl-commons");
-    await closeUpstream("abc", "charlie");
+    await closeUpstream("abc", {
+      rig_handle: "charlie",
+      pr_url: "https://www.dolthub.com/repositories/org/db/pulls/1",
+    });
     const call = vi.mocked(globalThis.fetch).mock.calls[0];
     expect(call[0]).toBe("/api/wanted/abc/close-upstream");
     expect(call[1]?.method).toBe("POST");
@@ -382,61 +454,79 @@ describe("API functions", () => {
         "X-Wasteland": "hop/wl-commons",
       }),
     );
-    expect(JSON.parse(call[1]?.body as string)).toEqual({ rig_handle: "charlie" });
+    expect(JSON.parse(call[1]?.body as string)).toEqual({
+      rig_handle: "charlie",
+      pr_url: "https://www.dolthub.com/repositories/org/db/pulls/1",
+    });
   });
 
   it("deleteItem() calls DELETE /api/wanted/:id", async () => {
     setActiveUpstream("hop/wl-commons");
     await deleteItem("abc");
-    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith("/api/wanted/abc", {
-      method: "DELETE",
-      headers: new Headers({
-        "X-Wasteland": "hop/wl-commons",
-      }),
-    });
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith(
+      "/api/wanted/abc",
+      {
+        method: "DELETE",
+        headers: new Headers({
+          "X-Wasteland": "hop/wl-commons",
+        }),
+      },
+    );
   });
 
   it("submitPR() calls POST /api/branches/pr/:branch", async () => {
     setActiveUpstream("hop/wl-commons");
     mockFetch(() => ({ url: "https://dolthub.com/pr/1" }));
     const result = await submitPR("wl/fix");
-    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith("/api/branches/pr/wl/fix", {
-      method: "POST",
-      headers: new Headers({
-        "X-Wasteland": "hop/wl-commons",
-      }),
-    });
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith(
+      "/api/branches/pr/wl/fix",
+      {
+        method: "POST",
+        headers: new Headers({
+          "X-Wasteland": "hop/wl-commons",
+        }),
+      },
+    );
     expect(result.url).toBe("https://dolthub.com/pr/1");
   });
 
   it("applyBranch() calls POST /api/branches/apply/:branch", async () => {
     setActiveUpstream("hop/wl-commons");
     await applyBranch("wl/fix");
-    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith("/api/branches/apply/wl/fix", {
-      method: "POST",
-      headers: new Headers({
-        "X-Wasteland": "hop/wl-commons",
-      }),
-    });
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith(
+      "/api/branches/apply/wl/fix",
+      {
+        method: "POST",
+        headers: new Headers({
+          "X-Wasteland": "hop/wl-commons",
+        }),
+      },
+    );
   });
 
   it("discardBranch() calls DELETE /api/branches/:branch", async () => {
     setActiveUpstream("hop/wl-commons");
     await discardBranch("wl/fix");
-    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith("/api/branches/wl/fix", {
-      method: "DELETE",
-      headers: new Headers({
-        "X-Wasteland": "hop/wl-commons",
-      }),
-    });
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith(
+      "/api/branches/wl/fix",
+      {
+        method: "DELETE",
+        headers: new Headers({
+          "X-Wasteland": "hop/wl-commons",
+        }),
+      },
+    );
   });
 
   it("branchDiff() calls GET /api/branches/diff/:branch", async () => {
     mockFetch(() => ({ diff: "+line" }));
     const result = await branchDiff("wl/fix");
-    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith("/api/branches/diff/wl/fix", {
-      headers: new Headers(),
-    });
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith(
+      "/api/branches/diff/wl/fix",
+      {
+        headers: new Headers(),
+      },
+    );
     expect(result.diff).toBe("+line");
   });
 
@@ -493,6 +583,9 @@ describe("API functions", () => {
         "X-Wasteland": "hop/wl-commons",
       }),
     );
-    expect(JSON.parse(call[1]?.body as string)).toEqual({ mode: "pr", signing: true });
+    expect(JSON.parse(call[1]?.body as string)).toEqual({
+      mode: "pr",
+      signing: true,
+    });
   });
 });

@@ -1084,6 +1084,37 @@ func TestAcceptUpstream_Handler(t *testing.T) {
 	}
 }
 
+func TestAcceptUpstream_Handler_UsesPRURLToDisambiguate(t *testing.T) {
+	db := newFakeDB()
+	db.items["w-1"] = &fakeItem{id: "w-1", title: "Fix bug", status: "open", priority: 1, postedBy: "bob", effortLevel: "medium"}
+
+	client := sdk.New(sdk.ClientConfig{
+		DB:        db,
+		RigHandle: "alice",
+		Mode:      "wild-west",
+		ListPendingItems: func() (map[string][]sdk.PendingItem, error) {
+			return map[string][]sdk.PendingItem{
+				"w-1": {
+					{RigHandle: "charlie", Status: "in_review", CompletedBy: "charlie", Evidence: "proof-a", PRURL: "https://example.com/pr/41"},
+					{RigHandle: "charlie", Status: "in_review", CompletedBy: "charlie", Evidence: "proof-b", PRURL: "https://example.com/pr/42"},
+				},
+			}, nil
+		},
+	})
+	srv := New(client)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	var resp MutationResponse
+	r := postJSON(t, ts, "/api/wanted/w-1/accept-upstream", `{"rig_handle":"charlie","pr_url":"https://example.com/pr/42","quality":3}`, &resp)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", r.StatusCode)
+	}
+	if resp.Detail == nil || resp.Detail.Item == nil || resp.Detail.Item.Status != "completed" {
+		t.Fatalf("expected completed detail, got %+v", resp.Detail)
+	}
+}
+
 func TestAcceptUpstream_Handler_MissingRigHandle(t *testing.T) {
 	db := newFakeDB()
 	db.items["w-1"] = &fakeItem{id: "w-1", title: "Fix bug", status: "open", priority: 1, postedBy: "bob", effortLevel: "medium"}

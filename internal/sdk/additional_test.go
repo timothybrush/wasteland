@@ -808,6 +808,34 @@ func TestRejectUpstream_Errors(t *testing.T) {
 	})
 }
 
+func TestRejectUpstreamSelected_PRURLDisambiguatesSameRig(t *testing.T) {
+	var closedURL string
+	c := New(ClientConfig{
+		DB:        newFakeDB(),
+		RigHandle: "alice",
+		ListPendingItems: pendingItems(map[string][]PendingItem{
+			"w-1": {
+				{RigHandle: "charlie", Status: "in_review", PRURL: "https://dolthub.example/pulls/41"},
+				{RigHandle: "charlie", Status: "in_review", PRURL: "https://dolthub.example/pulls/42"},
+			},
+		}),
+		CloseUpstreamPR: func(prURL string) error {
+			closedURL = prURL
+			return nil
+		},
+	})
+
+	if err := c.RejectUpstreamSelected("w-1", UpstreamSubmissionSelector{
+		RigHandle: "charlie",
+		PRURL:     "https://dolthub.example/pulls/42",
+	}); err != nil {
+		t.Fatalf("RejectUpstreamSelected() error = %v", err)
+	}
+	if closedURL != "https://dolthub.example/pulls/42" {
+		t.Fatalf("closed PR URL = %q, want selected pull URL", closedURL)
+	}
+}
+
 func TestCloseUpstream(t *testing.T) {
 	db := newFakeDB()
 	db.seedItem(fakeItem{ID: "w-1", Title: "Fix bug", Status: "in_review", PostedBy: "alice", EffortLevel: "medium"})
@@ -884,6 +912,57 @@ func TestCloseUpstream_SelfAllowed(t *testing.T) {
 	}
 	if db.completions["w-1"].StampID != "" {
 		t.Fatalf("stamp_id = %q, want empty", db.completions["w-1"].StampID)
+	}
+}
+
+func TestCloseUpstreamSelected_PRURLDisambiguatesSameRig(t *testing.T) {
+	db := newFakeDB()
+	db.seedItem(fakeItem{ID: "w-1", Title: "Fix bug", Status: "in_review", PostedBy: "alice", EffortLevel: "medium"})
+
+	var closedURL string
+	c := New(ClientConfig{
+		DB:        db,
+		RigHandle: "alice",
+		Mode:      "wild-west",
+		ListPendingItems: pendingItems(map[string][]PendingItem{
+			"w-1": {
+				{
+					RigHandle:   "charlie",
+					Status:      "in_review",
+					CompletedBy: "charlie",
+					Evidence:    "proof-a",
+					PRURL:       "https://dolthub.example/pulls/41",
+				},
+				{
+					RigHandle:   "charlie",
+					Status:      "in_review",
+					CompletedBy: "charlie",
+					Evidence:    "proof-b",
+					PRURL:       "https://dolthub.example/pulls/42",
+				},
+			},
+		}),
+		CloseUpstreamPR: func(prURL string) error {
+			closedURL = prURL
+			return nil
+		},
+	})
+
+	result, err := c.CloseUpstreamSelected("w-1", UpstreamSubmissionSelector{
+		RigHandle: "charlie",
+		PRURL:     "https://dolthub.example/pulls/42",
+	})
+	if err != nil {
+		t.Fatalf("CloseUpstreamSelected() error = %v", err)
+	}
+	if result.Detail == nil || result.Detail.Item == nil {
+		t.Fatal("CloseUpstreamSelected() should return detail with item")
+	}
+	if db.completions["w-1"].Evidence != "proof-b" {
+		t.Fatalf("accepted evidence = %q, want proof-b", db.completions["w-1"].Evidence)
+	}
+	if closedURL != "https://dolthub.example/pulls/42" {
+		t.Fatalf("closed PR URL = %q, want selected pull URL", closedURL)
 	}
 }
 

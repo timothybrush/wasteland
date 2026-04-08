@@ -232,6 +232,7 @@ type AcceptRequest struct {
 // AcceptUpstreamRequest is the JSON body for POST /api/wanted/{id}/accept-upstream.
 type AcceptUpstreamRequest struct {
 	RigHandle   string   `json:"rig_handle"`
+	PRURL       string   `json:"pr_url,omitempty"`
 	Quality     int      `json:"quality"`
 	Reliability int      `json:"reliability"`
 	Severity    string   `json:"severity"`
@@ -242,11 +243,13 @@ type AcceptUpstreamRequest struct {
 // RejectUpstreamRequest is the JSON body for POST /api/wanted/{id}/reject-upstream.
 type RejectUpstreamRequest struct {
 	RigHandle string `json:"rig_handle"`
+	PRURL     string `json:"pr_url,omitempty"`
 }
 
 // CloseUpstreamRequest is the JSON body for POST /api/wanted/{id}/close-upstream.
 type CloseUpstreamRequest struct {
 	RigHandle string `json:"rig_handle"`
+	PRURL     string `json:"pr_url,omitempty"`
 }
 
 // RejectRequest is the JSON body for POST /api/wanted/{id}/reject.

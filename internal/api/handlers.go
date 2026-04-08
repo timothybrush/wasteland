@@ -646,7 +646,10 @@ func (s *Server) handleAcceptUpstream(w http.ResponseWriter, r *http.Request) {
 	if req.Severity == "" {
 		req.Severity = "leaf"
 	}
-	result, err := client.AcceptUpstream(id, req.RigHandle, sdk.AcceptInput{
+	result, err := client.AcceptUpstreamSelected(id, sdk.UpstreamSubmissionSelector{
+		RigHandle: req.RigHandle,
+		PRURL:     req.PRURL,
+	}, sdk.AcceptInput{
 		Quality:     req.Quality,
 		Reliability: req.Reliability,
 		Severity:    req.Severity,
@@ -676,7 +679,10 @@ func (s *Server) handleRejectUpstream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "rig_handle is required")
 		return
 	}
-	if err := client.RejectUpstream(id, req.RigHandle); err != nil {
+	if err := client.RejectUpstreamSelected(id, sdk.UpstreamSubmissionSelector{
+		RigHandle: req.RigHandle,
+		PRURL:     req.PRURL,
+	}); err != nil {
 		writeMutationError(w, err)
 		return
 	}
@@ -699,7 +705,10 @@ func (s *Server) handleCloseUpstream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "rig_handle is required")
 		return
 	}
-	result, err := client.CloseUpstream(id, req.RigHandle)
+	result, err := client.CloseUpstreamSelected(id, sdk.UpstreamSubmissionSelector{
+		RigHandle: req.RigHandle,
+		PRURL:     req.PRURL,
+	})
 	if err != nil {
 		writeMutationError(w, err)
 		return

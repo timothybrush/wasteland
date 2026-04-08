@@ -107,6 +107,84 @@ func TestAvailableActions(t *testing.T) {
 	}
 }
 
+func TestDetail_OpenItemWithUpstreamReviewables_AllowsPosterModeration(t *testing.T) {
+	db := newFakeDB()
+	db.seedItem(fakeItem{
+		ID:          "w-1",
+		Title:       "Fix bug",
+		Status:      "open",
+		Priority:    1,
+		PostedBy:    "alice",
+		EffortLevel: "medium",
+	})
+
+	c := New(ClientConfig{
+		DB:        db,
+		RigHandle: "alice",
+		Mode:      "pr",
+		ListPendingItems: func() (map[string][]PendingItem, error) {
+			return map[string][]PendingItem{
+				"w-1": {
+					{
+						RigHandle:   "bob",
+						Status:      "in_review",
+						Branch:      "wl/bob/w-1",
+						PRURL:       "https://example.com/pr/1",
+						CompletedBy: "bob",
+						Evidence:    "https://example.com/evidence",
+					},
+				},
+			}, nil
+		},
+	})
+
+	result, err := c.Detail("w-1")
+	if err != nil {
+		t.Fatalf("Detail() error = %v", err)
+	}
+
+	assertActions(t, result.Actions, []string{"claim", "delete", "accept", "reject", "close"})
+}
+
+func TestDetail_OpenItemWithUpstreamReviewables_DoesNotGrantOtherUsersModeration(t *testing.T) {
+	db := newFakeDB()
+	db.seedItem(fakeItem{
+		ID:          "w-1",
+		Title:       "Fix bug",
+		Status:      "open",
+		Priority:    1,
+		PostedBy:    "alice",
+		EffortLevel: "medium",
+	})
+
+	c := New(ClientConfig{
+		DB:        db,
+		RigHandle: "bob",
+		Mode:      "pr",
+		ListPendingItems: func() (map[string][]PendingItem, error) {
+			return map[string][]PendingItem{
+				"w-1": {
+					{
+						RigHandle:   "charlie",
+						Status:      "in_review",
+						Branch:      "wl/charlie/w-1",
+						PRURL:       "https://example.com/pr/1",
+						CompletedBy: "charlie",
+						Evidence:    "https://example.com/evidence",
+					},
+				},
+			}, nil
+		},
+	})
+
+	result, err := c.Detail("w-1")
+	if err != nil {
+		t.Fatalf("Detail() error = %v", err)
+	}
+
+	assertActions(t, result.Actions, []string{"claim"})
+}
+
 // --- 2. Branch actions matrix ---
 
 func TestBranchActionsMatrix(t *testing.T) {

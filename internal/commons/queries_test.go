@@ -737,7 +737,7 @@ func TestValidBrowseCyclesAndLabels(t *testing.T) {
 	if got := ValidSortOrders(); len(got) != 3 || got[0] != SortPriority || got[1] != SortNewest || got[2] != SortAlpha {
 		t.Fatalf("ValidSortOrders() = %+v", got)
 	}
-	if got := ValidStatuses(); len(got) != 5 || got[0] != "open" || got[4] != "" {
+	if got := ValidStatuses(); len(got) != 6 || got[0] != "open" || got[4] != "validated" || got[5] != "" {
 		t.Fatalf("ValidStatuses() = %+v", got)
 	}
 	if got := ValidTypes(); len(got) != 7 || got[0] != "" || got[6] != "inference" {

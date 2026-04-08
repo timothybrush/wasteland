@@ -17,4 +17,12 @@ describe("StatusBadge", () => {
     render(<StatusBadge status="claimed" />);
     expect(screen.getByText("claimed")).toBeInTheDocument();
   });
+
+  it("supports validated as a first-class status", () => {
+    render(<StatusBadge status="validated" />);
+    expect(screen.getByText("validated")).toHaveAttribute(
+      "data-status",
+      "validated",
+    );
+  });
 });

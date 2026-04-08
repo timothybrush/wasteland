@@ -30,6 +30,7 @@ export const statusColor: Record<string, string> = {
   claimed: ayu.steel,
   in_review: ayu.brass,
   completed: ayu.accent,
+  validated: ayu.accent,
   withdrawn: ayu.dim,
 };
 

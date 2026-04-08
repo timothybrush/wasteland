@@ -339,6 +339,7 @@ func (c *Client) detailPRContext(ctx context.Context, wantedID string) (*DetailR
 	}
 	result.BranchActions = c.computeBranchActions(result)
 	result.UpstreamPRs = upstreamPRs
+	result.Actions = c.withUpstreamSubmissionActions(result.Item, result.UpstreamPRs, result.Actions)
 	return result, nil
 }
 
@@ -440,6 +441,7 @@ func (c *Client) detailWildWestContext(ctx context.Context, wantedID string) (*D
 		return result, nil
 	}
 	result.UpstreamPRs = upstreamPRs
+	result.Actions = c.withUpstreamSubmissionActions(result.Item, result.UpstreamPRs, result.Actions)
 	return result, nil
 }
 
@@ -497,6 +499,45 @@ func (c *Client) computeBranchActions(r *DetailResult) []string {
 		}
 	}
 	return ComputeBranchActions(c.mode, r.Branch, r.Delta, r.PRURL, hasDelete)
+}
+
+func (c *Client) withUpstreamSubmissionActions(
+	item *commons.WantedItem,
+	upstreamPRs []PendingItem,
+	actions []commons.Transition,
+) []commons.Transition {
+	if item == nil || len(upstreamPRs) == 0 {
+		return actions
+	}
+	if item.PostedBy != c.rigHandle && !commons.Admins[c.rigHandle] {
+		return actions
+	}
+
+	hasPendingSubmission := false
+	hasReviewableSubmission := false
+	for _, pending := range upstreamPRs {
+		hasPendingSubmission = true
+		if pending.Status == "in_review" {
+			hasReviewableSubmission = true
+		}
+	}
+	if hasReviewableSubmission {
+		actions = appendTransitionIfMissing(actions, commons.TransitionAccept)
+		actions = appendTransitionIfMissing(actions, commons.TransitionClose)
+	}
+	if hasPendingSubmission {
+		actions = appendTransitionIfMissing(actions, commons.TransitionReject)
+	}
+	return actions
+}
+
+func appendTransitionIfMissing(actions []commons.Transition, target commons.Transition) []commons.Transition {
+	for _, action := range actions {
+		if action == target {
+			return actions
+		}
+	}
+	return append(actions, target)
 }
 
 // Dashboard fetches the personal dashboard for the current rig handle.

@@ -58,4 +58,14 @@ describe("FilterBar", () => {
     render(<FilterBar filter={filter} onChange={onChange} />);
     expect(screen.getByLabelText("View mode")).toHaveValue("upstream");
   });
+
+  it("includes validated in the status filter options", () => {
+    render(<FilterBar filter={baseFilter} onChange={onChange} />);
+    const statusSelect = screen.getByLabelText("Filter by status");
+    expect(
+      Array.from(statusSelect.querySelectorAll("option")).map(
+        (option) => option.value,
+      ),
+    ).toContain("validated");
+  });
 });

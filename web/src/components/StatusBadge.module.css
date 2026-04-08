@@ -23,6 +23,9 @@
 .badge[data-status="completed"] {
   background-color: var(--accent);
 }
+.badge[data-status="validated"] {
+  background-color: var(--accent);
+}
 .badge[data-status="withdrawn"] {
   background-color: var(--dim);
 }

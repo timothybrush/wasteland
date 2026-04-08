@@ -16,6 +16,7 @@ describe("theme helpers", () => {
     expect(statusColor.claimed).toBe(ayu.steel);
     expect(statusColor.in_review).toBe(ayu.brass);
     expect(statusColor.completed).toBe(ayu.accent);
+    expect(statusColor.validated).toBe(ayu.accent);
     expect(statusColor.withdrawn).toBe(ayu.dim);
   });
 });

@@ -70,6 +70,22 @@ jobs:
           flags: web
           token: ${{ secrets.CODECOV_TOKEN }}
 
+  web-e2e:
+    name: Web E2E
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2
+      - name: Install web deps
+        run: cd web && bun install --frozen-lockfile
+      - name: Install Playwright browser
+        run: cd web && bunx playwright install --with-deps chromium
+      - name: Run Playwright e2e
+        run: cd web && bun run test:e2e
+
   audit:
     name: Audit
     runs-on: ubuntu-latest
