@@ -189,7 +189,7 @@ func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateConnectToken(w http.ResponseWriter, r *http.Request) {
-	scope, body, ok := s.requireServiceAuth(w, r, true, false)
+	scope, body, ok := s.requireServiceAuth(w, r, false)
 	if !ok {
 		return
 	}
@@ -348,7 +348,7 @@ func (s *Server) handleRedeemConnectToken(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleGetConnection(w http.ResponseWriter, r *http.Request) {
-	scope, _, ok := s.requireServiceAuth(w, r, true, true)
+	scope, _, ok := s.requireServiceAuth(w, r, true)
 	if !ok {
 		return
 	}
@@ -370,7 +370,7 @@ func (s *Server) handleGetConnection(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePatchRigHandle(w http.ResponseWriter, r *http.Request) {
-	scope, body, ok := s.requireServiceAuth(w, r, true, true)
+	scope, body, ok := s.requireServiceAuth(w, r, true)
 	if !ok {
 		return
 	}
@@ -415,7 +415,7 @@ func (s *Server) handlePatchRigHandle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpsertWasteland(w http.ResponseWriter, r *http.Request) {
-	scope, body, ok := s.requireServiceAuth(w, r, true, true)
+	scope, body, ok := s.requireServiceAuth(w, r, true)
 	if !ok {
 		return
 	}
@@ -469,7 +469,7 @@ func (s *Server) handleUpsertWasteland(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteWasteland(w http.ResponseWriter, r *http.Request) {
-	scope, body, ok := s.requireServiceAuth(w, r, true, true)
+	scope, body, ok := s.requireServiceAuth(w, r, true)
 	if !ok {
 		return
 	}
@@ -510,7 +510,7 @@ func (s *Server) handleDeleteWasteland(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePatchWastelandSettings(w http.ResponseWriter, r *http.Request) {
-	scope, body, ok := s.requireServiceAuth(w, r, true, true)
+	scope, body, ok := s.requireServiceAuth(w, r, true)
 	if !ok {
 		return
 	}
@@ -575,7 +575,7 @@ func (s *Server) handleProxyAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request, target string) {
-	scope, body, ok := s.requireServiceAuth(w, r, true, true)
+	scope, body, ok := s.requireServiceAuth(w, r, true)
 	if !ok {
 		return
 	}
@@ -659,7 +659,7 @@ func (s *Server) withCORS(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) requireServiceAuth(w http.ResponseWriter, r *http.Request, requireSubject, requireConnection bool) (ServiceScope, []byte, bool) {
+func (s *Server) requireServiceAuth(w http.ResponseWriter, r *http.Request, requireConnection bool) (ServiceScope, []byte, bool) {
 	body, err := readAndResetBody(r)
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, ErrorResponse{
@@ -690,7 +690,7 @@ func (s *Server) requireServiceAuth(w http.ResponseWriter, r *http.Request, requ
 		})
 		return ServiceScope{}, nil, false
 	}
-	if requireSubject && scope.SubjectID == "" {
+	if scope.SubjectID == "" {
 		s.writeError(w, http.StatusUnauthorized, ErrorResponse{
 			ErrorCode:   "missing_subject_id",
 			UserMessage: "service-auth subject_id is required",

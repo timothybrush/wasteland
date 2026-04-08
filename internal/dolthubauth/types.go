@@ -17,6 +17,7 @@ type UserMetadata struct {
 	Wastelands []WastelandConfig `json:"wastelands"`
 }
 
+// MergedWith returns a copy of the metadata with update values applied.
 func (m UserMetadata) MergedWith(update UserMetadata) UserMetadata {
 	merged := UserMetadata{
 		RigHandle:  update.RigHandle,
@@ -31,6 +32,7 @@ func (m UserMetadata) MergedWith(update UserMetadata) UserMetadata {
 	return merged
 }
 
+// FindWasteland returns the matching Wasteland entry for the given upstream.
 func (m *UserMetadata) FindWasteland(upstream string) *WastelandConfig {
 	for i := range m.Wastelands {
 		if m.Wastelands[i].Upstream == upstream {
@@ -40,6 +42,7 @@ func (m *UserMetadata) FindWasteland(upstream string) *WastelandConfig {
 	return nil
 }
 
+// UpsertWasteland adds or replaces a Wasteland entry by upstream.
 func (m *UserMetadata) UpsertWasteland(wl WastelandConfig) {
 	for i := range m.Wastelands {
 		if m.Wastelands[i].Upstream == wl.Upstream {
@@ -50,6 +53,7 @@ func (m *UserMetadata) UpsertWasteland(wl WastelandConfig) {
 	m.Wastelands = append(m.Wastelands, wl)
 }
 
+// RemoveWasteland removes the Wasteland entry for the given upstream.
 func (m *UserMetadata) RemoveWasteland(upstream string) bool {
 	for i := range m.Wastelands {
 		if m.Wastelands[i].Upstream == upstream {
@@ -60,24 +64,36 @@ func (m *UserMetadata) RemoveWasteland(upstream string) bool {
 	return false
 }
 
+// ConnectionStatus describes the lifecycle state of a connection.
 type ConnectionStatus string
 
 const (
-	StatusActive   ConnectionStatus = "active"
-	StatusInvalid  ConnectionStatus = "invalid"
+	// StatusActive means the connection is usable.
+	StatusActive ConnectionStatus = "active"
+	// StatusInvalid means the stored credential failed validation.
+	StatusInvalid ConnectionStatus = "invalid"
+	// StatusDegraded means the connection is usable but has a recent issue.
 	StatusDegraded ConnectionStatus = "degraded"
 )
 
+// ValidationErrorCode classifies a credential validation failure.
 type ValidationErrorCode string
 
 const (
-	ValidationInvalidKey          ValidationErrorCode = "invalid_key"
-	ValidationExpiredKey          ValidationErrorCode = "expired_key"
-	ValidationRevokedKey          ValidationErrorCode = "revoked_key"
+	// ValidationInvalidKey means DoltHub rejected the credential.
+	ValidationInvalidKey ValidationErrorCode = "invalid_key"
+	// ValidationExpiredKey means the credential has expired.
+	ValidationExpiredKey ValidationErrorCode = "expired_key"
+	// ValidationRevokedKey means the credential was revoked.
+	ValidationRevokedKey ValidationErrorCode = "revoked_key"
+	// ValidationUpstreamUnreachable means the upstream could not be reached.
 	ValidationUpstreamUnreachable ValidationErrorCode = "upstream_unreachable"
-	ValidationRateLimited         ValidationErrorCode = "rate_limited"
-	ValidationKMSUnavailable      ValidationErrorCode = "kms_unavailable"
-	ValidationProxyUnauthorized   ValidationErrorCode = "proxy_unauthorized"
+	// ValidationRateLimited means the upstream asked us to back off.
+	ValidationRateLimited ValidationErrorCode = "rate_limited"
+	// ValidationKMSUnavailable means the encryption backend was unavailable.
+	ValidationKMSUnavailable ValidationErrorCode = "kms_unavailable"
+	// ValidationProxyUnauthorized means DoltHub rejected the proxy request.
+	ValidationProxyUnauthorized ValidationErrorCode = "proxy_unauthorized"
 )
 
 // Connection is the stored, non-secret view of a DoltHub connection.
@@ -97,12 +113,14 @@ type Connection struct {
 	UpdatedAt               time.Time           `json:"updated_at"`
 }
 
+// CreateConnectTokenRequest is the browser-facing request for a connect token.
 type CreateConnectTokenRequest struct {
 	SubjectID  string       `json:"subject_id"`
 	Metadata   UserMetadata `json:"metadata"`
 	TTLSeconds int          `json:"ttl_seconds,omitempty"`
 }
 
+// CreateConnectTokenResponse returns the opaque token pair and approved metadata.
 type CreateConnectTokenResponse struct {
 	ConnectToken string       `json:"connect_token"`
 	RedeemSecret string       `json:"redeem_secret"`
@@ -110,6 +128,7 @@ type CreateConnectTokenResponse struct {
 	ExpiresAt    time.Time    `json:"expires_at"`
 }
 
+// RedeemConnectTokenRequest submits the browser-issued API key for storage.
 type RedeemConnectTokenRequest struct {
 	ConnectToken string       `json:"connect_token"`
 	RedeemSecret string       `json:"redeem_secret"`
@@ -117,12 +136,14 @@ type RedeemConnectTokenRequest struct {
 	Metadata     UserMetadata `json:"metadata"`
 }
 
+// RedeemConnectTokenResponse reports the new connection identity and status.
 type RedeemConnectTokenResponse struct {
 	ConnectionID    string           `json:"connection_id"`
 	Status          ConnectionStatus `json:"status"`
 	LastValidatedAt *time.Time       `json:"last_validated_at,omitempty"`
 }
 
+// ErrorResponse is the standard JSON error envelope returned by the service.
 type ErrorResponse struct {
 	ErrorCode   string `json:"error_code,omitempty"`
 	Error       string `json:"error,omitempty"`
@@ -131,6 +152,7 @@ type ErrorResponse struct {
 	RequestID   string `json:"request_id,omitempty"`
 }
 
+// ConnectionResponse is the non-secret connection view returned to Wasteland.
 type ConnectionResponse struct {
 	ConnectionID            string              `json:"connection_id"`
 	SubjectID               string              `json:"subject_id"`
@@ -144,6 +166,7 @@ type ConnectionResponse struct {
 	RecordVersion           int                 `json:"record_version"`
 }
 
+// NewConnectionResponse converts an internal connection into its public view.
 func NewConnectionResponse(conn *Connection) ConnectionResponse {
 	return ConnectionResponse{
 		ConnectionID:            conn.ConnectionID,
@@ -159,17 +182,20 @@ func NewConnectionResponse(conn *Connection) ConnectionResponse {
 	}
 }
 
+// WastelandUpsertRequest adds or replaces one Wasteland entry.
 type WastelandUpsertRequest struct {
 	RecordVersion int             `json:"record_version"`
 	Wasteland     WastelandConfig `json:"wasteland"`
 }
 
+// WastelandSettingsPatchRequest updates mutable Wasteland settings.
 type WastelandSettingsPatchRequest struct {
 	RecordVersion int    `json:"record_version"`
 	Mode          string `json:"mode"`
 	Signing       bool   `json:"signing"`
 }
 
+// RigHandlePatchRequest updates the stored rig handle.
 type RigHandlePatchRequest struct {
 	RecordVersion int    `json:"record_version"`
 	RigHandle     string `json:"rig_handle"`

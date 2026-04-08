@@ -34,6 +34,8 @@ type AuthServiceWorkspaceResolver struct {
 	pendingCache map[string]*pendingUpstreamCache
 }
 
+// NewAuthServiceWorkspaceResolver constructs a resolver backed by the
+// standalone DoltHub auth service.
 func NewAuthServiceWorkspaceResolver(auth *dolthubauth.Client, sessions *SessionStore) *AuthServiceWorkspaceResolver {
 	return &AuthServiceWorkspaceResolver{
 		auth:         auth,
@@ -43,6 +45,7 @@ func NewAuthServiceWorkspaceResolver(auth *dolthubauth.Client, sessions *Session
 	}
 }
 
+// Stop terminates any background pending-item caches owned by the resolver.
 func (wr *AuthServiceWorkspaceResolver) Stop() {
 	wr.pendingMu.Lock()
 	caches := make([]*pendingUpstreamCache, 0, len(wr.pendingCache))
@@ -55,10 +58,13 @@ func (wr *AuthServiceWorkspaceResolver) Stop() {
 	}
 }
 
+// Resolve loads the workspace for the provided session.
 func (wr *AuthServiceWorkspaceResolver) Resolve(session *UserSession) (*sdk.Workspace, error) {
 	return wr.ResolveContext(context.Background(), session)
 }
 
+// ResolveContext loads the workspace for the provided session using the
+// supplied context.
 func (wr *AuthServiceWorkspaceResolver) ResolveContext(ctx context.Context, session *UserSession) (*sdk.Workspace, error) {
 	ctx, span := hostedTracer.Start(ctx, "hosted.auth_service_workspace.resolve")
 	defer span.End()
@@ -77,6 +83,7 @@ func (wr *AuthServiceWorkspaceResolver) ResolveContext(ctx context.Context, sess
 	return wr.waitOnResolveResult(ctx, span, resultCh)
 }
 
+// WarmSession primes the resolver cache for the session's current connection.
 func (wr *AuthServiceWorkspaceResolver) WarmSession(session *UserSession, conn *dolthubauth.ConnectionResponse) {
 	if session == nil || session.ConnectionID == "" || conn == nil || len(conn.Wastelands) == 0 {
 		return
@@ -155,6 +162,7 @@ func (wr *AuthServiceWorkspaceResolver) resolveFromConnection(_ context.Context,
 	return ws, nil
 }
 
+// InvalidateConnection evicts any cached workspace for the given connection.
 func (wr *AuthServiceWorkspaceResolver) InvalidateConnection(connectionID string) {
 	wr.mu.Lock()
 	defer wr.mu.Unlock()

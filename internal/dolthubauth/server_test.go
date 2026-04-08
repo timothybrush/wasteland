@@ -13,14 +13,6 @@ import (
 	"time"
 )
 
-type fakeChecker struct {
-	err error
-}
-
-func (f fakeChecker) Check(context.Context) error {
-	return f.err
-}
-
 type fakeStore struct {
 	checkErr         error
 	connectExpiresAt time.Time

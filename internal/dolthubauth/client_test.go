@@ -30,10 +30,10 @@ func TestProxyTransport_RewritesDoltHubRequestsToAuthService(t *testing.T) {
 		now:          func() time.Time { return now },
 		subjectID:    "subject-1",
 		connectionID: "conn-1",
-		inner: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			gotReq = req.Clone(req.Context())
-			if req.Body != nil {
-				body, err := io.ReadAll(req.Body)
+		inner: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			gotReq = r.Clone(r.Context())
+			if r.Body != nil {
+				body, err := io.ReadAll(r.Body)
 				if err != nil {
 					t.Fatalf("read proxied body: %v", err)
 				}
@@ -103,7 +103,7 @@ func TestProxyTransport_RejectsUnsupportedTargets(t *testing.T) {
 		now:          time.Now,
 		subjectID:    "subject-1",
 		connectionID: "conn-1",
-		inner: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		inner: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 			called = true
 			return &http.Response{
 				StatusCode: http.StatusNoContent,

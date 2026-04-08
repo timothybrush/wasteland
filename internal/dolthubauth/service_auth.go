@@ -28,6 +28,7 @@ const (
 	maxClockSkew      = 5 * time.Minute
 )
 
+// ServiceScope describes the caller identity extracted from service auth.
 type ServiceScope struct {
 	KeyID        string
 	TenantID     string
@@ -37,6 +38,7 @@ type ServiceScope struct {
 	RequestID    string
 }
 
+// NonceRecorder stores or rejects service-auth nonces for replay protection.
 type NonceRecorder interface {
 	UseServiceNonce(context.Context, string, string, time.Time, time.Time) error
 }

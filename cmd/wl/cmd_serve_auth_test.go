@@ -70,19 +70,21 @@ func (f *fakeDolthubAuthStore) UseServiceNonce(context.Context, string, string, 
 }
 
 type fakeDolthubAuthChecker struct {
-	err error
+	checkErr   error
+	encryptErr error
+	decryptErr error
 }
 
 func (f fakeDolthubAuthChecker) Check(context.Context) error {
-	return f.err
+	return f.checkErr
 }
 
 func (f fakeDolthubAuthChecker) Encrypt(context.Context, []byte) ([]byte, string, string, error) {
-	return []byte("cipher"), "local-master-key", "local-master-key", nil
+	return []byte("cipher"), "local-master-key", "local-master-key", f.encryptErr
 }
 
 func (f fakeDolthubAuthChecker) Decrypt(context.Context, []byte, string, string) ([]byte, error) {
-	return []byte("plain"), nil
+	return []byte("plain"), f.decryptErr
 }
 
 func withServeAuthOverrides(
@@ -90,7 +92,6 @@ func withServeAuthOverrides(
 	loadCfg func() (dolthubauth.Config, error),
 	openStore func(context.Context, dolthubauth.Config) (dolthubauth.SchemaStore, error),
 	newKeyManager func(dolthubauth.Config) (dolthubauth.ReadinessChecker, error),
-	newServer func(dolthubauth.Config, dolthubauth.Dependencies) (*dolthubauth.Server, error),
 ) {
 	t.Helper()
 	oldLoadCfg := loadDolthubAuthConfig
@@ -105,9 +106,6 @@ func withServeAuthOverrides(
 	}
 	if newKeyManager != nil {
 		newDolthubAuthKeyManager = newKeyManager
-	}
-	if newServer != nil {
-		newDolthubAuthServer = newServer
 	}
 	t.Cleanup(func() {
 		loadDolthubAuthConfig = oldLoadCfg
@@ -148,7 +146,6 @@ func TestRunServeAuth_Success(t *testing.T) {
 		func() (dolthubauth.Config, error) { return cfg, nil },
 		func(context.Context, dolthubauth.Config) (dolthubauth.SchemaStore, error) { return store, nil },
 		func(dolthubauth.Config) (dolthubauth.ReadinessChecker, error) { return fakeDolthubAuthChecker{}, nil },
-		nil,
 	)
 
 	var gotAddr string
@@ -192,7 +189,6 @@ func TestRunServeAuth_ListenAddrFlagOverridesEnvConfig(t *testing.T) {
 			return &fakeDolthubAuthStore{}, nil
 		},
 		func(dolthubauth.Config) (dolthubauth.ReadinessChecker, error) { return fakeDolthubAuthChecker{}, nil },
-		nil,
 	)
 
 	var gotAddr string
@@ -215,7 +211,6 @@ func TestRunServeAuth_ErrorPaths(t *testing.T) {
 		withServeAuthOverrides(
 			t,
 			func() (dolthubauth.Config, error) { return dolthubauth.Config{}, errors.New("missing env") },
-			nil,
 			nil,
 			nil,
 		)
@@ -249,7 +244,6 @@ func TestRunServeAuth_ErrorPaths(t *testing.T) {
 				return &fakeDolthubAuthStore{applyErr: errors.New("ddl failed")}, nil
 			},
 			func(dolthubauth.Config) (dolthubauth.ReadinessChecker, error) { return fakeDolthubAuthChecker{}, nil },
-			nil,
 		)
 
 		var stdout, stderr bytes.Buffer

@@ -13,6 +13,7 @@ import (
 	"github.com/gastownhall/wasteland/internal/observability"
 )
 
+// ClientConfig configures a DoltHub auth-service client.
 type ClientConfig struct {
 	BaseURL      string
 	TenantID     string
@@ -23,6 +24,7 @@ type ClientConfig struct {
 	HTTPClient   *http.Client
 }
 
+// Client talks to the DoltHub auth service and its proxy surface.
 type Client struct {
 	baseURL      string
 	tenantID     string
@@ -33,6 +35,7 @@ type Client struct {
 	httpClient   *http.Client
 }
 
+// NewClient constructs an auth-service client from the supplied config.
 func NewClient(cfg ClientConfig) *Client {
 	now := cfg.Now
 	if now == nil {
@@ -53,10 +56,12 @@ func NewClient(cfg ClientConfig) *Client {
 	}
 }
 
+// BaseURL returns the auth-service base URL.
 func (c *Client) BaseURL() string {
 	return c.baseURL
 }
 
+// RequestError reports a non-2xx response from the auth service.
 type RequestError struct {
 	Status      int
 	ErrorCode   string
@@ -74,6 +79,7 @@ func (e *RequestError) Error() string {
 	return fmt.Sprintf("auth service returned HTTP %d", e.Status)
 }
 
+// CreateConnectToken asks the auth service to mint a browser connect token.
 func (c *Client) CreateConnectToken(ctx context.Context, subjectID string, metadata UserMetadata, ttl time.Duration) (*CreateConnectTokenResponse, error) {
 	body, err := json.Marshal(CreateConnectTokenRequest{
 		SubjectID:  subjectID,
@@ -90,6 +96,7 @@ func (c *Client) CreateConnectToken(ctx context.Context, subjectID string, metad
 	return &resp, nil
 }
 
+// GetConnection fetches the stored connection view for a subject.
 func (c *Client) GetConnection(ctx context.Context, subjectID, connectionID string) (*ConnectionResponse, error) {
 	var resp ConnectionResponse
 	path := fmt.Sprintf("/v1/connections/%s", connectionID)
@@ -99,6 +106,7 @@ func (c *Client) GetConnection(ctx context.Context, subjectID, connectionID stri
 	return &resp, nil
 }
 
+// PatchRigHandle updates the stored rig handle for a connection.
 func (c *Client) PatchRigHandle(ctx context.Context, subjectID, connectionID, rigHandle string, recordVersion int) (*ConnectionResponse, error) {
 	body, err := json.Marshal(RigHandlePatchRequest{
 		RecordVersion: recordVersion,
@@ -115,6 +123,7 @@ func (c *Client) PatchRigHandle(ctx context.Context, subjectID, connectionID, ri
 	return &resp, nil
 }
 
+// UpsertWasteland adds or replaces one Wasteland entry on a connection.
 func (c *Client) UpsertWasteland(ctx context.Context, subjectID, connectionID string, recordVersion int, wasteland WastelandConfig) (*ConnectionResponse, error) {
 	body, err := json.Marshal(WastelandUpsertRequest{
 		RecordVersion: recordVersion,
@@ -131,6 +140,7 @@ func (c *Client) UpsertWasteland(ctx context.Context, subjectID, connectionID st
 	return &resp, nil
 }
 
+// DeleteWasteland removes one Wasteland entry from a connection.
 func (c *Client) DeleteWasteland(ctx context.Context, subjectID, connectionID, upstream string, recordVersion int) (*ConnectionResponse, error) {
 	body, err := json.Marshal(struct {
 		RecordVersion int `json:"record_version"`
@@ -146,6 +156,7 @@ func (c *Client) DeleteWasteland(ctx context.Context, subjectID, connectionID, u
 	return &resp, nil
 }
 
+// PatchWastelandSettings updates the mutable settings for one Wasteland entry.
 func (c *Client) PatchWastelandSettings(
 	ctx context.Context,
 	subjectID, connectionID, upstream string,
@@ -169,6 +180,7 @@ func (c *Client) PatchWastelandSettings(
 	return &resp, nil
 }
 
+// NewProxyHTTPClient returns an HTTP client that rewrites DoltHub requests.
 func (c *Client) NewProxyHTTPClient(subjectID, connectionID string) *http.Client {
 	return observability.WrapClient(&http.Client{
 		Transport: &ProxyTransport{
@@ -186,6 +198,7 @@ func (c *Client) NewProxyHTTPClient(subjectID, connectionID string) *http.Client
 	})
 }
 
+// ProxyTransport rewrites authenticated DoltHub requests through the auth service.
 type ProxyTransport struct {
 	baseURL      string
 	tenantID     string
@@ -199,6 +212,7 @@ type ProxyTransport struct {
 	nonceFn      func(int) (string, error)
 }
 
+// RoundTrip proxies a single DoltHub request through the auth service.
 func (t *ProxyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	body, err := readAndResetBody(req)
 	if err != nil {

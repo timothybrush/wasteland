@@ -22,6 +22,8 @@ type ProxyForkRegistrar interface {
 // DoltHubProxyForkRegistrar is the production proxy-backed fork registrar.
 type DoltHubProxyForkRegistrar struct{}
 
+// EnsureForkAndRegister creates the fork and registers the rig through the
+// proxy-authenticated DoltHub client.
 func (d *DoltHubProxyForkRegistrar) EnsureForkAndRegister(client *http.Client, upstream, forkOrg, _, rigHandle, displayName, email string) string {
 	if client == nil {
 		return "no authenticated DoltHub transport available — fork and registration skipped"

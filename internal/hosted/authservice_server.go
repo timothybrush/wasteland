@@ -26,6 +26,8 @@ type AuthServiceServer struct {
 	environment   string
 }
 
+// NewAuthServiceServer constructs a hosted server wired to the standalone
+// DoltHub auth service.
 func NewAuthServiceServer(
 	resolver *AuthServiceWorkspaceResolver,
 	sessions *SessionStore,
@@ -48,6 +50,8 @@ func NewAuthServiceServer(
 	}
 }
 
+// Handler returns the HTTP handler for the hosted app when it is backed by the
+// standalone DoltHub auth service.
 func (s *AuthServiceServer) Handler(apiServer *api.Server, assets fs.FS) http.Handler {
 	mux := http.NewServeMux()
 
@@ -472,6 +476,8 @@ func (s *AuthServiceServer) handleLeaveWasteland(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 }
 
+// AuthMiddleware resolves the active workspace and injects it into the request
+// context before authenticated API handlers run.
 func (s *AuthServiceServer) AuthMiddleware(next http.Handler) http.Handler {
 	isValidUpstream := func(value string) bool {
 		org, db, ok := strings.Cut(value, "/")

@@ -13,6 +13,7 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
+// AuthStore defines the persistence API used by the auth service.
 type AuthStore interface {
 	ReadinessChecker
 	CreateConnectToken(context.Context, []byte, []byte, string, UserMetadata, time.Time, time.Time) error
@@ -26,6 +27,7 @@ type AuthStore interface {
 	UseServiceNonce(context.Context, string, string, time.Time, time.Time) error
 }
 
+// RedeemInput bundles the data needed to redeem a connect token.
 type RedeemInput struct {
 	TenantID           string
 	Environment        string
@@ -38,6 +40,7 @@ type RedeemInput struct {
 	ValidateCredential func(context.Context, string) (ValidationErrorCode, error)
 }
 
+// CreateConnectToken stores a pending connect token in Postgres.
 func (s *PostgresStore) CreateConnectToken(
 	ctx context.Context,
 	connectTokenMAC, redeemSecretMAC []byte,
@@ -70,6 +73,7 @@ func (s *PostgresStore) CreateConnectToken(
 	return nil
 }
 
+// RedeemConnectToken validates and activates a browser-submitted API key.
 func (s *PostgresStore) RedeemConnectToken(ctx context.Context, input RedeemInput) (*Connection, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -248,6 +252,7 @@ func (s *PostgresStore) RedeemConnectToken(ctx context.Context, input RedeemInpu
 	return connection, nil
 }
 
+// GetConnection fetches the stored non-secret connection view.
 func (s *PostgresStore) GetConnection(
 	ctx context.Context,
 	tenantID, environment, subjectID, connectionID string,
@@ -259,6 +264,7 @@ type queryRower interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
+// GetConnectionTx fetches the stored non-secret connection view within a tx.
 func (s *PostgresStore) GetConnectionTx(
 	ctx context.Context,
 	q queryRower,
@@ -291,6 +297,7 @@ func (s *PostgresStore) GetConnectionTx(
 	return conn, nil
 }
 
+// GetConnectionCredential fetches and decrypts the stored DoltHub API key.
 func (s *PostgresStore) GetConnectionCredential(
 	ctx context.Context,
 	tenantID, environment, subjectID, connectionID string,
@@ -391,6 +398,7 @@ func (s *PostgresStore) GetConnectionCredential(
 	return conn, string(plaintext), nil
 }
 
+// PatchRigHandle updates the stored rig handle for one connection.
 func (s *PostgresStore) PatchRigHandle(
 	ctx context.Context,
 	tenantID, environment, subjectID, connectionID, rigHandle string,
@@ -403,6 +411,7 @@ func (s *PostgresStore) PatchRigHandle(
 	})
 }
 
+// UpsertWasteland adds or replaces one Wasteland entry on a connection.
 func (s *PostgresStore) UpsertWasteland(
 	ctx context.Context,
 	tenantID, environment, subjectID, connectionID string,
@@ -416,6 +425,7 @@ func (s *PostgresStore) UpsertWasteland(
 	})
 }
 
+// DeleteWasteland removes one Wasteland entry from a connection.
 func (s *PostgresStore) DeleteWasteland(
 	ctx context.Context,
 	tenantID, environment, subjectID, connectionID, upstream string,
@@ -433,6 +443,7 @@ func (s *PostgresStore) DeleteWasteland(
 	})
 }
 
+// PatchWastelandSettings updates mutable fields on a Wasteland entry.
 func (s *PostgresStore) PatchWastelandSettings(
 	ctx context.Context,
 	tenantID, environment, subjectID, connectionID, upstream, mode string,
@@ -524,6 +535,7 @@ func (s *PostgresStore) patchMetadataTx(
 	return conn, nil
 }
 
+// UseServiceNonce records a nonce to prevent replayed service-auth requests.
 func (s *PostgresStore) UseServiceNonce(ctx context.Context, keyID, nonce string, now, expiresAt time.Time) error {
 	if err := s.reapExpiredServiceNonces(ctx, now.UTC()); err != nil {
 		return fmt.Errorf("reap expired nonces: %w", err)
