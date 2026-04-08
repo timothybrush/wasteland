@@ -3,6 +3,9 @@ coverage.txt
 /bin/
 /wl
 .envrc
+.env
+.env.local
+.env.*.local
 web/node_modules/
 web/dist/*
 !web/dist/.gitkeep

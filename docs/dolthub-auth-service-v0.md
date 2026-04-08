@@ -117,6 +117,9 @@ These were explicitly resolved with the user:
 - logout destroys only the Wasteland browser session, not the stored
   connection
 - phase 1 does not require an explicit end-user “forget credentials” feature
+- environment-specific operator overlays such as real KMS resource names, IAM
+  principals, Railway/Doppler wiring, and incident runbooks live in the private
+  infra repo rather than this public repo
 
 ## Normative Identifiers
 

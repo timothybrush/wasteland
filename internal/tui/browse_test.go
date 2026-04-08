@@ -290,10 +290,10 @@ func TestBrowseView_StatusLabel(t *testing.T) {
 		t.Errorf("after statusIdx=1, view should show 'Status: claimed', got:\n%s", v)
 	}
 
-	m.statusIdx = 4 // "" → "all"
+	m.statusIdx = len(commons.ValidStatuses()) - 1 // "" -> "all"
 	v = m.view()
 	if !strings.Contains(v, "Status: all") {
-		t.Errorf("after statusIdx=4, view should show 'Status: all', got:\n%s", v)
+		t.Errorf("after statusIdx=%d, view should show 'Status: all', got:\n%s", m.statusIdx, v)
 	}
 }
 

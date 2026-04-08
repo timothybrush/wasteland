@@ -13,6 +13,9 @@ type Config struct {
 	DatabaseURL                     string
 	TenantID                        string
 	Environment                     string
+	EncryptionBackend               string
+	KMSKeyName                      string
+	GCPCredentialsJSON              string
 	CurrentKeyID                    string
 	CurrentSharedSecret             string
 	NextKeyID                       string
@@ -32,6 +35,9 @@ func LoadConfigFromEnv() (Config, error) {
 		DatabaseURL:                     strings.TrimSpace(os.Getenv("DOLTHUB_AUTH_DATABASE_URL")),
 		TenantID:                        strings.TrimSpace(os.Getenv("DOLTHUB_AUTH_TENANT_ID")),
 		Environment:                     strings.TrimSpace(os.Getenv("DOLTHUB_AUTH_ENVIRONMENT")),
+		EncryptionBackend:               strings.TrimSpace(os.Getenv("DOLTHUB_AUTH_ENCRYPTION_BACKEND")),
+		KMSKeyName:                      strings.TrimSpace(os.Getenv("DOLTHUB_AUTH_KMS_KEY_NAME")),
+		GCPCredentialsJSON:              strings.TrimSpace(os.Getenv("DOLTHUB_AUTH_GCP_CREDENTIALS_JSON")),
 		CurrentKeyID:                    strings.TrimSpace(os.Getenv("DOLTHUB_AUTH_CURRENT_KEY_ID")),
 		CurrentSharedSecret:             strings.TrimSpace(os.Getenv("DOLTHUB_AUTH_CURRENT_SHARED_SECRET")),
 		NextKeyID:                       strings.TrimSpace(os.Getenv("DOLTHUB_AUTH_NEXT_KEY_ID")),
@@ -62,7 +68,6 @@ func (cfg Config) Validate() error {
 		{key: "DOLTHUB_AUTH_CURRENT_SHARED_SECRET", value: cfg.CurrentSharedSecret},
 		{key: "DOLTHUB_AUTH_TOKEN_PEPPER", value: cfg.TokenPepper},
 		{key: "DOLTHUB_AUTH_REDEEM_PEPPER", value: cfg.RedeemPepper},
-		{key: "DOLTHUB_AUTH_MASTER_KEY", value: cfg.MasterKey},
 	}
 	for _, requiredValue := range required {
 		value := strings.TrimSpace(requiredValue.value)
@@ -76,10 +81,33 @@ func (cfg Config) Validate() error {
 	if (cfg.NextKeyID == "") != (cfg.NextSharedSecret == "") {
 		return fmt.Errorf("DOLTHUB_AUTH_NEXT_KEY_ID and DOLTHUB_AUTH_NEXT_SHARED_SECRET must be set together")
 	}
-	if isProductionEnvironment(cfg.Environment) && !cfg.AllowLocalMasterKeyInProduction {
-		return fmt.Errorf("production auth-service startup requires a KMS-backed encryption backend or DOLTHUB_AUTH_ALLOW_LOCAL_MASTER_KEY_IN_PRODUCTION=true")
+	switch cfg.effectiveEncryptionBackend() {
+	case localEncryptionBackend:
+		if strings.TrimSpace(cfg.MasterKey) == "" {
+			return fmt.Errorf("DOLTHUB_AUTH_MASTER_KEY is required")
+		}
+		if isProductionEnvironment(cfg.Environment) && !cfg.AllowLocalMasterKeyInProduction {
+			return fmt.Errorf("production auth-service startup requires a KMS-backed encryption backend or DOLTHUB_AUTH_ALLOW_LOCAL_MASTER_KEY_IN_PRODUCTION=true")
+		}
+	case kmsEnvelopeEncryptionBackend:
+		if strings.TrimSpace(cfg.KMSKeyName) == "" {
+			return fmt.Errorf("DOLTHUB_AUTH_KMS_KEY_NAME is required")
+		}
+	default:
+		return fmt.Errorf("unsupported DOLTHUB_AUTH_ENCRYPTION_BACKEND %q", cfg.EncryptionBackend)
 	}
 	return nil
+}
+
+func (cfg Config) effectiveEncryptionBackend() string {
+	backend := strings.TrimSpace(cfg.EncryptionBackend)
+	if backend != "" {
+		return backend
+	}
+	if strings.TrimSpace(cfg.KMSKeyName) != "" {
+		return kmsEnvelopeEncryptionBackend
+	}
+	return localEncryptionBackend
 }
 
 func splitAndTrimCSV(raw string) []string {

@@ -139,6 +139,9 @@ Scope:
 - replace hosted Nango env vars with auth-service env vars
 - add auth-service-specific env contract
 - keep hosted app and auth service deployable independently
+- keep exact environment-specific values, IAM principals, KMS resource names,
+  Railway service wiring, and incident runbooks in the private infra repo
+  overlay rather than in this public repo
 
 New Wasteland hosted env:
 

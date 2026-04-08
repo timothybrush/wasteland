@@ -11,6 +11,7 @@ func TestLoadConfigFromEnv_Success(t *testing.T) {
 	t.Setenv("DOLTHUB_AUTH_DATABASE_URL", "postgres://auth:secret@localhost/auth")
 	t.Setenv("DOLTHUB_AUTH_TENANT_ID", "tenant-dev")
 	t.Setenv("DOLTHUB_AUTH_ENVIRONMENT", "dev")
+	t.Setenv("DOLTHUB_AUTH_ENCRYPTION_BACKEND", "local-master-key")
 	t.Setenv("DOLTHUB_AUTH_CURRENT_KEY_ID", "current-key")
 	t.Setenv("DOLTHUB_AUTH_CURRENT_SHARED_SECRET", "current-secret")
 	t.Setenv("DOLTHUB_AUTH_NEXT_KEY_ID", "next-key")
@@ -73,6 +74,30 @@ func TestConfigValidate_AllowsProductionLocalMasterKeyWithExplicitOverride(t *te
 	}
 }
 
+func TestConfigValidate_AllowsProductionKMSBackend(t *testing.T) {
+	cfg := validConfig()
+	cfg.Environment = "production"
+	cfg.EncryptionBackend = kmsEnvelopeEncryptionBackend
+	cfg.KMSKeyName = "projects/example-project/locations/us-central1/keyRings/example-ring/cryptoKeys/dolthub-auth-production"
+	cfg.MasterKey = ""
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestConfigValidate_RequiresKMSKeyName(t *testing.T) {
+	cfg := validConfig()
+	cfg.EncryptionBackend = kmsEnvelopeEncryptionBackend
+	cfg.KMSKeyName = ""
+	cfg.MasterKey = ""
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "DOLTHUB_AUTH_KMS_KEY_NAME is required") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func clearAuthEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
@@ -80,6 +105,9 @@ func clearAuthEnv(t *testing.T) {
 		"DOLTHUB_AUTH_DATABASE_URL",
 		"DOLTHUB_AUTH_TENANT_ID",
 		"DOLTHUB_AUTH_ENVIRONMENT",
+		"DOLTHUB_AUTH_ENCRYPTION_BACKEND",
+		"DOLTHUB_AUTH_KMS_KEY_NAME",
+		"DOLTHUB_AUTH_GCP_CREDENTIALS_JSON",
 		"DOLTHUB_AUTH_CURRENT_KEY_ID",
 		"DOLTHUB_AUTH_CURRENT_SHARED_SECRET",
 		"DOLTHUB_AUTH_NEXT_KEY_ID",
@@ -99,6 +127,7 @@ func validConfig() Config {
 		DatabaseURL:         "postgres://auth:secret@localhost/auth",
 		TenantID:            "tenant-dev",
 		Environment:         "dev",
+		EncryptionBackend:   localEncryptionBackend,
 		CurrentKeyID:        "current-key",
 		CurrentSharedSecret: "current-secret",
 		TokenPepper:         "token-pepper",
@@ -133,6 +162,7 @@ func TestLoadConfigFromEnv_DoesNotDependOnAmbientProcessEnv(t *testing.T) {
 		{"DOLTHUB_AUTH_DATABASE_URL", "postgres://auth:secret@localhost/auth"},
 		{"DOLTHUB_AUTH_TENANT_ID", "tenant-dev"},
 		{"DOLTHUB_AUTH_ENVIRONMENT", "dev"},
+		{"DOLTHUB_AUTH_ENCRYPTION_BACKEND", "local-master-key"},
 		{"DOLTHUB_AUTH_CURRENT_KEY_ID", "current-key"},
 		{"DOLTHUB_AUTH_CURRENT_SHARED_SECRET", "current-secret"},
 		{"DOLTHUB_AUTH_TOKEN_PEPPER", "token-pepper"},
@@ -161,5 +191,19 @@ func TestParseBoolEnv(t *testing.T) {
 		if parseBoolEnv(value) {
 			t.Fatalf("parseBoolEnv(%q) = true", value)
 		}
+	}
+}
+
+func TestConfigEffectiveEncryptionBackend(t *testing.T) {
+	cfg := validConfig()
+	if got := cfg.effectiveEncryptionBackend(); got != localEncryptionBackend {
+		t.Fatalf("effectiveEncryptionBackend() = %q", got)
+	}
+
+	cfg = validConfig()
+	cfg.EncryptionBackend = ""
+	cfg.KMSKeyName = "projects/example-project/locations/us-central1/keyRings/example-ring/cryptoKeys/dolthub-auth-staging"
+	if got := cfg.effectiveEncryptionBackend(); got != kmsEnvelopeEncryptionBackend {
+		t.Fatalf("effectiveEncryptionBackend() = %q", got)
 	}
 }

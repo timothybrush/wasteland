@@ -20,10 +20,8 @@ var (
 	openDolthubAuthStore  = func(ctx context.Context, cfg dolthubauth.Config) (dolthubauth.SchemaStore, error) {
 		return dolthubauth.OpenPostgres(ctx, cfg.DatabaseURL, cfg.TenantID, cfg.Environment)
 	}
-	newDolthubAuthKeyManager = func(cfg dolthubauth.Config) (dolthubauth.ReadinessChecker, error) {
-		return dolthubauth.NewLocalMasterKey(cfg.MasterKey)
-	}
-	newDolthubAuthServer = dolthubauth.NewServer
+	newDolthubAuthKeyManager = dolthubauth.NewCredentialCipher
+	newDolthubAuthServer     = dolthubauth.NewServer
 )
 
 func newServeAuthCmd(stdout, stderr io.Writer) *cobra.Command {
@@ -88,22 +86,25 @@ func runServeAuth(cmd *cobra.Command, stdout, _ io.Writer) error {
 		return fmt.Errorf("bootstrap auth-service schema: %w", err)
 	}
 
-	keyManager, err := newDolthubAuthKeyManager(cfg)
+	keyManager, err := newDolthubAuthKeyManager(startupCtx, cfg)
 	if err != nil {
 		return fmt.Errorf("configure auth-service key manager: %w", err)
+	}
+	if closer, ok := keyManager.(io.Closer); ok {
+		defer func() {
+			if closeErr := closer.Close(); closeErr != nil {
+				slog.Warn("auth-service key manager close failed", "error", closeErr)
+			}
+		}()
 	}
 	authStore, ok := store.(dolthubauth.AuthStore)
 	if !ok {
 		return fmt.Errorf("auth-service store does not implement runtime auth operations")
 	}
-	cipher, ok := keyManager.(dolthubauth.CredentialCipher)
-	if !ok {
-		return fmt.Errorf("auth-service key manager does not implement credential encryption")
-	}
 
 	server, err := newDolthubAuthServer(cfg, dolthubauth.Dependencies{
 		Store:      authStore,
-		KeyManager: cipher,
+		KeyManager: keyManager,
 		Version:    version,
 	})
 	if err != nil {

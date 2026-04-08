@@ -91,7 +91,7 @@ func withServeAuthOverrides(
 	t *testing.T,
 	loadCfg func() (dolthubauth.Config, error),
 	openStore func(context.Context, dolthubauth.Config) (dolthubauth.SchemaStore, error),
-	newKeyManager func(dolthubauth.Config) (dolthubauth.ReadinessChecker, error),
+	newKeyManager func(context.Context, dolthubauth.Config) (dolthubauth.CredentialCipher, error),
 ) {
 	t.Helper()
 	oldLoadCfg := loadDolthubAuthConfig
@@ -145,7 +145,9 @@ func TestRunServeAuth_Success(t *testing.T) {
 		t,
 		func() (dolthubauth.Config, error) { return cfg, nil },
 		func(context.Context, dolthubauth.Config) (dolthubauth.SchemaStore, error) { return store, nil },
-		func(dolthubauth.Config) (dolthubauth.ReadinessChecker, error) { return fakeDolthubAuthChecker{}, nil },
+		func(context.Context, dolthubauth.Config) (dolthubauth.CredentialCipher, error) {
+			return fakeDolthubAuthChecker{}, nil
+		},
 	)
 
 	var gotAddr string
@@ -188,7 +190,9 @@ func TestRunServeAuth_ListenAddrFlagOverridesEnvConfig(t *testing.T) {
 		func(context.Context, dolthubauth.Config) (dolthubauth.SchemaStore, error) {
 			return &fakeDolthubAuthStore{}, nil
 		},
-		func(dolthubauth.Config) (dolthubauth.ReadinessChecker, error) { return fakeDolthubAuthChecker{}, nil },
+		func(context.Context, dolthubauth.Config) (dolthubauth.CredentialCipher, error) {
+			return fakeDolthubAuthChecker{}, nil
+		},
 	)
 
 	var gotAddr string
@@ -243,7 +247,9 @@ func TestRunServeAuth_ErrorPaths(t *testing.T) {
 			func(context.Context, dolthubauth.Config) (dolthubauth.SchemaStore, error) {
 				return &fakeDolthubAuthStore{applyErr: errors.New("ddl failed")}, nil
 			},
-			func(dolthubauth.Config) (dolthubauth.ReadinessChecker, error) { return fakeDolthubAuthChecker{}, nil },
+			func(context.Context, dolthubauth.Config) (dolthubauth.CredentialCipher, error) {
+				return fakeDolthubAuthChecker{}, nil
+			},
 		)
 
 		var stdout, stderr bytes.Buffer
