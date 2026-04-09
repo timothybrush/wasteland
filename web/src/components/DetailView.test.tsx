@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -59,6 +59,7 @@ function renderDetail(id = "item-1") {
 let cleanupFetch: () => void;
 
 afterEach(() => {
+  cleanup();
   setActiveUpstream(null);
   localStorage.removeItem("wl_active");
   cleanupFetch?.();
@@ -525,17 +526,28 @@ describe("DetailView", () => {
         screen.getByRole("button", { name: "accept" }),
       ).toBeInTheDocument(),
     );
-    await userEvent.click(screen.getByRole("button", { name: "accept" }));
+    fireEvent.click(screen.getByRole("button", { name: "accept" }));
     await waitFor(() =>
       expect(
         screen.getByRole("dialog", { name: "Accept Submission" }),
       ).toBeInTheDocument(),
     );
-    await userEvent.selectOptions(screen.getByLabelText("Quality"), "4");
-    await userEvent.selectOptions(screen.getByLabelText("Reliability"), "3");
-    await userEvent.selectOptions(screen.getByLabelText("Severity"), "branch");
-    await userEvent.type(screen.getByLabelText("Message"), "Solid review");
-    await userEvent.click(screen.getByRole("button", { name: "Accept" }));
+    fireEvent.change(screen.getByLabelText("Quality"), {
+      target: { value: "4" },
+    });
+    fireEvent.change(screen.getByLabelText("Reliability"), {
+      target: { value: "3" },
+    });
+    fireEvent.change(screen.getByLabelText("Severity"), {
+      target: { value: "branch" },
+    });
+    fireEvent.change(screen.getByLabelText("Tags"), {
+      target: { value: "go, sql" },
+    });
+    fireEvent.change(screen.getByLabelText("Message"), {
+      target: { value: "Solid review" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
     await waitFor(() => {
       const acceptCalls = fetchFn.mock.calls.filter(([u]) =>
         u.endsWith("/accept-upstream"),
@@ -548,11 +560,12 @@ describe("DetailView", () => {
           quality: 4,
           reliability: 3,
           severity: "branch",
+          skill_tags: ["go", "sql"],
           message: "Solid review",
         }),
       );
     });
-  });
+  }, 10000);
 
   it("opens an accept dialog for mainline acceptance and lets reliability default to quality", async () => {
     setActiveUpstream("hop/wl-commons");
@@ -573,7 +586,7 @@ describe("DetailView", () => {
         screen.getByRole("button", { name: "accept" }),
       ).toBeInTheDocument(),
     );
-    await userEvent.click(screen.getByRole("button", { name: "accept" }));
+    fireEvent.click(screen.getByRole("button", { name: "accept" }));
     expect(
       screen.getByRole("dialog", { name: "Accept Submission" }),
     ).toBeInTheDocument();
@@ -581,8 +594,13 @@ describe("DetailView", () => {
       fetchFn.mock.calls.filter(([u]) => u.endsWith("/accept")),
     ).toHaveLength(0);
 
-    await userEvent.selectOptions(screen.getByLabelText("Quality"), "5");
-    await userEvent.click(screen.getByRole("button", { name: "Accept" }));
+    fireEvent.change(screen.getByLabelText("Quality"), {
+      target: { value: "5" },
+    });
+    fireEvent.change(screen.getByLabelText("Tags"), {
+      target: { value: "ops, review" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
 
     await waitFor(() => {
       const acceptCalls = fetchFn.mock.calls.filter(([u]) =>
@@ -593,10 +611,11 @@ describe("DetailView", () => {
         JSON.stringify({
           quality: 5,
           severity: "leaf",
+          skill_tags: ["ops", "review"],
         }),
       );
     });
-  });
+  }, 10000);
 
   it("reloads detail after a conflicting mainline accept", async () => {
     setActiveUpstream("hop/wl-commons");

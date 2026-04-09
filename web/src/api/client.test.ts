@@ -375,7 +375,11 @@ describe("API functions", () => {
 
   it("accept() calls POST with stamp data", async () => {
     setActiveUpstream("hop/wl-commons");
-    await accept("abc", { quality: 5, reliability: 4 });
+    await accept("abc", {
+      quality: 5,
+      reliability: 4,
+      skill_tags: ["ops", "review"],
+    });
     const call = vi.mocked(globalThis.fetch).mock.calls[0];
     expect(call[0]).toBe("/api/wanted/abc/accept");
     expect(call[1]?.headers).toEqual(
@@ -387,6 +391,7 @@ describe("API functions", () => {
     expect(JSON.parse(call[1]?.body as string)).toEqual({
       quality: 5,
       reliability: 4,
+      skill_tags: ["ops", "review"],
     });
   });
 
@@ -398,7 +403,12 @@ describe("API functions", () => {
         rig_handle: "charlie",
         pr_url: "https://www.dolthub.com/repositories/org/db/pulls/1",
       },
-      { quality: 5, reliability: 4, severity: "branch" },
+      {
+        quality: 5,
+        reliability: 4,
+        severity: "branch",
+        skill_tags: ["go", "sql"],
+      },
     );
     const call = vi.mocked(globalThis.fetch).mock.calls[0];
     expect(call[0]).toBe("/api/wanted/abc/accept-upstream");
@@ -415,6 +425,7 @@ describe("API functions", () => {
       quality: 5,
       reliability: 4,
       severity: "branch",
+      skill_tags: ["go", "sql"],
     });
   });
 
