@@ -73,7 +73,7 @@ func runServeAuth(cmd *cobra.Command, stdout, _ io.Writer) error {
 	initSentry(cfg.Environment)
 	defer sentry.Flush(2 * time.Second)
 
-	startupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	startupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	store, err := openDolthubAuthStore(startupCtx, cfg)
