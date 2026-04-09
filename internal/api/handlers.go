@@ -76,7 +76,10 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	)
 	scope := s.readCacheScope(r, client)
 	fetch := func(ctx context.Context) ([]byte, error) {
-		result, err := client.BrowseContext(strictPendingReadContext(ctx, scope.cacheable), filter)
+		// Browse should degrade gracefully when pending-overlay discovery is slow.
+		// Forcing strict pending reads on cacheable hosted browse requests turns a
+		// cold pending-cache refresh into a full request stall.
+		result, err := client.BrowseContext(ctx, filter)
 		if err != nil {
 			return nil, err
 		}

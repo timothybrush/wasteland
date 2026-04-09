@@ -435,6 +435,45 @@ func TestHostedUncacheableBrowse_RetainsBestEffortPendingReads(t *testing.T) {
 	}
 }
 
+func TestHostedCacheableBrowse_RetainsBestEffortPendingReads(t *testing.T) {
+	db := newFakeDB()
+	db.items["w-1"] = &fakeItem{id: "w-1", title: "Fix bug", status: "open", postedBy: "alice", effortLevel: "small"}
+	client := sdk.New(sdk.ClientConfig{
+		DB:                     db,
+		RigHandle:              "alice",
+		Upstream:               "hop/wl-commons",
+		Mode:                   "pr",
+		BestEffortPendingReads: true,
+		ListPendingItemsContext: func(context.Context) (map[string][]sdk.PendingItem, error) {
+			return nil, errors.New("pending metadata unavailable")
+		},
+		SaveConfig: func(_ string, _ bool) error { return nil },
+	})
+	srv := NewHostedWorkspace(func(*http.Request) (*sdk.Client, error) {
+		return client, nil
+	}, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/wanted", nil)
+	req = req.WithContext(WithResolvedReadIdentity(req.Context(), ResolvedReadIdentity{
+		Upstream: "hop/wl-commons",
+		Viewer:   "alice",
+	}))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp BrowseResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode browse response: %v", err)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].ID != "w-1" {
+		t.Fatalf("unexpected browse response: %+v", resp.Items)
+	}
+}
+
 func TestWriteUpstreamError_ClassifiesErrors(t *testing.T) {
 	tests := []struct {
 		name   string
