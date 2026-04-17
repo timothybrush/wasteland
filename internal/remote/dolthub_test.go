@@ -722,7 +722,7 @@ func TestDoltHubProvider_CreatePR_PrimesFindPRCache(t *testing.T) {
 	var detailCalls atomic.Int32
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/org/db/pulls/77", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/org/db/pulls/77", func(_ http.ResponseWriter, _ *http.Request) {
 		detailCalls.Add(1)
 		t.Fatal("FindPR() should use the create-path cache without reading PR detail")
 	})
