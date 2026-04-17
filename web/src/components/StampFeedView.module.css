@@ -47,6 +47,41 @@
   border: 1px solid var(--border);
 }
 
+.errorBanner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-left-width: 4px;
+  border-radius: 4px;
+  color: var(--fg);
+  font-size: 0.875rem;
+}
+
+.errorIcon {
+  color: var(--accent);
+  font-size: 1.125rem;
+  font-weight: 700;
+}
+
+.showMore {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: inherit;
+  font-style: normal;
+  cursor: pointer;
+  text-decoration: underline;
+  font-family: inherit;
+}
+
+.showMore:hover {
+  text-decoration: none;
+}
+
 .stampList {
   display: flex;
   flex-direction: column;

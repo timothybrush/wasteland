@@ -1,5 +1,8 @@
+import { useState } from "react";
 import type { StampFeedEntry, StampFeedResponse } from "../api/types";
 import styles from "./StampFeedView.module.css";
+
+const MESSAGE_TRUNCATE_CHARS = 200;
 
 export function StampFeedView({ data }: { data: StampFeedResponse }) {
   const githubHref = safeHref(data.github_url);
@@ -23,7 +26,12 @@ export function StampFeedView({ data }: { data: StampFeedResponse }) {
       <p className={styles.banner}>No character sheet yet — showing federation activity</p>
 
       {data.stamps_error ? (
-        <p className={styles.errorNote}>Couldn't load recent stamps — try again later.</p>
+        <div className={styles.errorBanner} role="alert">
+          <span className={styles.errorIcon} aria-hidden="true">
+            ⚠
+          </span>
+          <span>Couldn't load recent stamps — try again later.</span>
+        </div>
       ) : (
         <section className={styles.stampList}>
           {data.stamps.map((stamp) => (
@@ -82,16 +90,46 @@ function StampCard({ stamp }: { stamp: StampFeedEntry }) {
         {date && <span>· {date}</span>}
       </div>
 
-      {stamp.message && <p className={styles.message}>{stamp.message}</p>}
-      {stamp.evidence_text && !evidenceHref && <p className={styles.message}>{stamp.evidence_text}</p>}
+      {stamp.message && <TruncatedMessage text={stamp.message} label="message" />}
+      {stamp.evidence_text && !evidenceHref && <TruncatedMessage text={stamp.evidence_text} label="evidence" />}
     </article>
+  );
+}
+
+function TruncatedMessage({ text, label }: { text: string; label: string }) {
+  const [expanded, setExpanded] = useState(false);
+  // Count and slice by Unicode code points rather than UTF-16 code units so
+  // emoji and other non-BMP characters straddling the boundary can't be
+  // split into a broken glyph. Note: this is not grapheme-cluster safe —
+  // ZWJ sequences (👨‍👩‍👧) or flag sequences (🇺🇸) can still split at
+  // their join point. Acceptable for prose validator messages; revisit
+  // with Intl.Segmenter if emoji-heavy content becomes common.
+  const codepoints = Array.from(text);
+  const needsTruncation = codepoints.length > MESSAGE_TRUNCATE_CHARS;
+  if (!needsTruncation) {
+    return <p className={styles.message}>{text}</p>;
+  }
+  const displayed = expanded ? text : `${codepoints.slice(0, MESSAGE_TRUNCATE_CHARS).join("").trimEnd()}…`;
+  return (
+    <p className={styles.message}>
+      {displayed}{" "}
+      <button
+        type="button"
+        className={styles.showMore}
+        aria-expanded={expanded}
+        aria-label={expanded ? `show less of ${label}` : `show more of ${label}`}
+        onClick={() => setExpanded((v) => !v)}
+      >
+        {expanded ? "show less" : "show more"}
+      </button>
+    </p>
   );
 }
 
 // safeHref returns the URL only when its scheme is http(s). Prevents
 // javascript: or data: URLs from backend evidence fields becoming
-// clickable XSS gadgets.
-function safeHref(raw: string | undefined): string | null {
+// clickable XSS gadgets. Exported for direct testing.
+export function safeHref(raw: string | undefined): string | null {
   if (!raw) return null;
   try {
     const parsed = new URL(raw);
@@ -104,11 +142,12 @@ function safeHref(raw: string | undefined): string | null {
   return null;
 }
 
-function formatDate(raw: string): string {
+// formatDate produces a locale-specific date string ("Apr 13, 2026")
+// in the viewer's timezone, or the raw input on parse failure.
+// Exported for direct testing.
+export function formatDate(raw: string): string {
   if (!raw) return "";
   const date = new Date(raw);
   if (Number.isNaN(date.getTime())) return raw;
-  // Format in the viewer's local timezone so timestamps read as the
-  // date the event happened from their perspective, not UTC.
   return date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
