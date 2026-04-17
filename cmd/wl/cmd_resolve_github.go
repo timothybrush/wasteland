@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"os"
 	"regexp"
 	"sort"
 	"time"
@@ -249,6 +251,59 @@ func listStampSubjects(reader pile.RowQuerier) ([]string, error) {
 	}
 	sort.Strings(subjects)
 	return subjects, nil
+}
+
+// PrimeGitHubCacheAsync fires off a background `resolve-github --all`
+// equivalent so a freshly deployed `wl serve` (especially Railway, where
+// the cache file starts empty after a deploy onto a fresh persistent
+// volume) self-populates without an ops step. Set WL_SKIP_CACHE_PRIME=1
+// to disable — handy in local dev to avoid burning GitHub API quota.
+//
+// Runs in a goroutine. All errors are logged and swallowed. Idempotent:
+// subsequent runs skip handles already cached (no --refresh).
+func PrimeGitHubCacheAsync() {
+	if os.Getenv("WL_SKIP_CACHE_PRIME") == "1" {
+		slog.Info("stamp_cache: startup prime skipped (WL_SKIP_CACHE_PRIME=1)")
+		return
+	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("stamp_cache: startup prime panic; swallowing", "panic", r)
+			}
+		}()
+		slog.Info("stamp_cache: startup prime started")
+		start := time.Now()
+		// runResolveGitHubAll honors cache state (skips resolved,
+		// retries tried-and-failed) so repeat runs are cheap. Discard
+		// stdout chatter; send stderr to slog-shaped lines via a tiny
+		// adapter so operators see errors in the structured log.
+		err := runResolveGitHubAll(context.Background(), io.Discard, slogWriter{level: slog.LevelWarn}, false)
+		elapsed := time.Since(start).Round(time.Second)
+		if err != nil {
+			slog.Warn("stamp_cache: startup prime completed with errors",
+				"error", err, "elapsed", elapsed)
+			return
+		}
+		slog.Info("stamp_cache: startup prime complete", "elapsed", elapsed)
+	}()
+}
+
+// slogWriter adapts io.Writer so stderr output from the batch resolver
+// lands in the structured log rather than on a detached stream.
+type slogWriter struct {
+	level slog.Level
+}
+
+func (w slogWriter) Write(p []byte) (int, error) {
+	msg := string(p)
+	// Trim trailing newline that fmt.Fprintln adds so the log line
+	// isn't doubled.
+	if n := len(msg); n > 0 && msg[n-1] == '\n' {
+		msg = msg[:n-1]
+	}
+	slog.Log(context.Background(), w.level, msg)
+	return len(p), nil
 }
 
 // writeResolverError prints an operator-friendly stderr message and
