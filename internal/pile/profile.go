@@ -143,12 +143,25 @@ type StampFeedEntry struct {
 	CreatedAt     string   `json:"created_at"`
 }
 
+// GithubHandleLookup resolves a rig handle to a verified GitHub username.
+// It returns the cached entry and true when the handle has been recorded
+// (whether resolution succeeded or was tried-and-failed), or a zero Entry
+// and false when the handle has never been resolved. Implementations must
+// be safe for concurrent use. Pass nil to skip the lookup entirely — the
+// stamp feed then emits an empty GithubURL and the UI renders no link.
+type GithubHandleLookup func(handle string) (github string, ok bool)
+
 // QueryProfileResponse returns a character sheet if hop/the-pile has a
 // boot_block for the handle, otherwise falls back to a stamp feed assembled
 // from hop/wl-commons. Returns ErrProfileNotFound only when both sources
 // are empty — a truly unknown handle. If commonsReader is nil, the fallback
 // is skipped and ErrProfileNotFound propagates from the pile lookup.
-func QueryProfileResponse(pileReader, commonsReader RowQuerier, handle string) (*ProfileResponse, error) {
+//
+// cacheGet, when non-nil, is consulted for the stamp-feed variant to
+// populate StampFeed.GithubURL from a persistent rig-handle → GitHub
+// username cache. Cache miss, absent handle, or empty GitHub username all
+// yield an empty GithubURL. The character-sheet path never consults it.
+func QueryProfileResponse(pileReader, commonsReader RowQuerier, cacheGet GithubHandleLookup, handle string) (*ProfileResponse, error) {
 	profile, err := QueryProfile(pileReader, handle)
 	if err == nil {
 		return &ProfileResponse{Kind: KindCharacterSheet, CharacterSheet: profile}, nil
@@ -160,9 +173,16 @@ func QueryProfileResponse(pileReader, commonsReader RowQuerier, handle string) (
 		return nil, err
 	}
 
+	githubURL := ""
+	if cacheGet != nil {
+		if gh, ok := cacheGet(handle); ok && gh != "" {
+			githubURL = "https://github.com/" + url.PathEscape(gh)
+		}
+	}
+
 	feed := &StampFeed{
 		Handle:    handle,
-		GithubURL: "https://github.com/" + url.PathEscape(handle),
+		GithubURL: githubURL,
 		Stamps:    []StampFeedEntry{},
 	}
 

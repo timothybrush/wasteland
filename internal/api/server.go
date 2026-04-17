@@ -6,9 +6,11 @@ package api
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/gastownhall/wasteland/internal/githubcache"
 	"github.com/gastownhall/wasteland/internal/pile"
 	"github.com/gastownhall/wasteland/internal/sdk"
 )
@@ -27,6 +29,7 @@ type Server struct {
 	mutationInvalidator func(context.Context)
 	pile                pile.RowQuerier
 	commons             pile.RowQuerier
+	ghCache             githubcache.Cache
 	scoreboard          *CachedEndpoint
 	scoreboardDetail    *CachedEndpoint
 	scoreboardDump      *CachedEndpoint
@@ -57,6 +60,7 @@ func NewHosted(fn ClientFunc) *Server {
 	}
 	s.pile = pile.NewDefault()
 	s.commons = pile.NewCommonsReader()
+	s.ghCache = loadGitHubCache()
 	s.registerRoutes()
 	return s
 }
@@ -73,6 +77,7 @@ func NewHostedWorkspace(clientFn ClientFunc, workspaceFn WorkspaceFunc) *Server 
 	}
 	s.pile = pile.NewDefault()
 	s.commons = pile.NewCommonsReader()
+	s.ghCache = loadGitHubCache()
 	s.registerRoutes()
 	return s
 }
@@ -87,8 +92,21 @@ func NewWithClientFunc(fn ClientFunc) *Server {
 	}
 	s.pile = pile.NewDefault()
 	s.commons = pile.NewCommonsReader()
+	s.ghCache = loadGitHubCache()
 	s.registerRoutes()
 	return s
+}
+
+// loadGitHubCache opens the on-disk github-handles cache. Failures are
+// logged and swallowed: the profile handler tolerates a nil cache.
+func loadGitHubCache() githubcache.Cache {
+	c, err := githubcache.Load()
+	if err != nil {
+		slog.Warn("github-handles cache unavailable; profile links disabled",
+			"error", err)
+		return nil
+	}
+	return c
 }
 
 // SetProfileQuerier replaces the primary pile data source and clears the
@@ -105,6 +123,31 @@ func (s *Server) SetProfileQuerier(pq pile.RowQuerier) {
 // a handle has no boot_block in the-pile (useful for testing).
 func (s *Server) SetCommonsQuerier(cq pile.RowQuerier) {
 	s.commons = cq
+}
+
+// SetGitHubCache replaces the rig-handle → GitHub username cache used by
+// the stamp-feed profile view. Pass nil to disable cache lookups (the
+// stamp feed then emits an empty github_url and the UI renders no link).
+func (s *Server) SetGitHubCache(c githubcache.Cache) {
+	s.ghCache = c
+}
+
+// githubHandleLookup returns a pile.GithubHandleLookup closure over the
+// server's cache, or nil when no cache is configured. The closure returns
+// only the GitHub username string so that internal/pile remains free of
+// any dependency on internal/githubcache.
+func (s *Server) githubHandleLookup() pile.GithubHandleLookup {
+	if s.ghCache == nil {
+		return nil
+	}
+	cache := s.ghCache
+	return func(handle string) (string, bool) {
+		entry, ok := cache.Get(handle)
+		if !ok {
+			return "", false
+		}
+		return entry.GitHub, true
+	}
 }
 
 // SetScoreboard sets the scoreboard cache for the public scoreboard endpoint.

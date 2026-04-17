@@ -135,7 +135,13 @@ func TestQueryProfileResponse_CharacterSheet(t *testing.T) {
 	// commons should not be consulted when boot_block is present.
 	commonsQ := &routedFakeQuerier{}
 
-	resp, err := QueryProfileResponse(pileQ, commonsQ, "alice")
+	// A cacheGet that panics on call proves the character-sheet path never
+	// consults the cache.
+	noCacheGet := func(string) (string, bool) {
+		t.Fatal("cacheGet must not be called for character_sheet responses")
+		return "", false
+	}
+	resp, err := QueryProfileResponse(pileQ, commonsQ, noCacheGet, "alice")
 	if err != nil {
 		t.Fatalf("QueryProfileResponse() error = %v", err)
 	}
@@ -183,7 +189,7 @@ func TestQueryProfileResponse_StampFeed_FromCommons(t *testing.T) {
 		}}},
 	}}
 
-	resp, err := QueryProfileResponse(pileQ, commonsQ, "rileywhite")
+	resp, err := QueryProfileResponse(pileQ, commonsQ, nil, "rileywhite")
 	if err != nil {
 		t.Fatalf("QueryProfileResponse() error = %v", err)
 	}
@@ -194,8 +200,10 @@ func TestQueryProfileResponse_StampFeed_FromCommons(t *testing.T) {
 	if feed == nil || feed.Handle != "rileywhite" {
 		t.Fatalf("StampFeed = %+v", feed)
 	}
-	if feed.GithubURL != "https://github.com/rileywhite" {
-		t.Fatalf("GithubURL = %q", feed.GithubURL)
+	// Without a cache, the stamp feed emits no GitHub link — the UI gates
+	// the anchor on a non-empty href, so no unverified fallback renders.
+	if feed.GithubURL != "" {
+		t.Fatalf("GithubURL = %q, want empty string when cacheGet is nil", feed.GithubURL)
 	}
 	if feed.StampsError != nil {
 		t.Fatalf("StampsError = %v, want nil", feed.StampsError)
@@ -240,7 +248,7 @@ func TestQueryProfileResponse_NotFound(t *testing.T) {
 		{match: "LEFT JOIN completions", rows: []map[string]any{}},
 	}}
 
-	_, err := QueryProfileResponse(pileQ, commonsQ, "nobody")
+	_, err := QueryProfileResponse(pileQ, commonsQ, nil, "nobody")
 	if err == nil {
 		t.Fatal("QueryProfileResponse() should return error for truly unknown handle")
 	}
@@ -258,7 +266,7 @@ func TestQueryProfileResponse_StampsUnavailable(t *testing.T) {
 		{match: "LEFT JOIN completions", err: commonsErr},
 	}}
 
-	resp, err := QueryProfileResponse(pileQ, commonsQ, "rileywhite")
+	resp, err := QueryProfileResponse(pileQ, commonsQ, nil, "rileywhite")
 	if err != nil {
 		t.Fatalf("QueryProfileResponse() error = %v, want degraded response", err)
 	}
@@ -280,7 +288,7 @@ func TestQueryProfileResponse_PileError_Propagates(t *testing.T) {
 	}}
 	commonsQ := &routedFakeQuerier{}
 
-	_, err := QueryProfileResponse(pileQ, commonsQ, "alice")
+	_, err := QueryProfileResponse(pileQ, commonsQ, nil, "alice")
 	if err == nil || errors.Is(err, ErrProfileNotFound) {
 		t.Fatalf("error = %v, want non-404 upstream error", err)
 	}
@@ -291,7 +299,7 @@ func TestQueryProfileResponse_NilCommons_FallsThroughToNotFound(t *testing.T) {
 		{match: "FROM boot_blocks", rows: []map[string]any{}},
 	}}
 
-	_, err := QueryProfileResponse(pileQ, nil, "nobody")
+	_, err := QueryProfileResponse(pileQ, nil, nil, "nobody")
 	if err == nil || !errors.Is(err, ErrProfileNotFound) {
 		t.Fatalf("error = %v, want ErrProfileNotFound when commons is nil", err)
 	}
@@ -309,12 +317,107 @@ func TestQueryProfileResponse_NilCommons_StillServesCharacterSheet(t *testing.T)
 		{match: "FROM stamps WHERE subject", rows: []map[string]any{}},
 	}}
 
-	resp, err := QueryProfileResponse(pileQ, nil, "alice")
+	resp, err := QueryProfileResponse(pileQ, nil, nil, "alice")
 	if err != nil {
 		t.Fatalf("QueryProfileResponse() error = %v, want success without commons", err)
 	}
 	if resp.Kind != KindCharacterSheet {
 		t.Fatalf("Kind = %q", resp.Kind)
+	}
+}
+
+// TestQueryProfileResponse_StampFeed_CacheHitPopulatesGithubURL verifies
+// that when the handle has a resolved GitHub username in the cache, the
+// stamp feed links to github.com/<resolved> rather than the bare handle.
+func TestQueryProfileResponse_StampFeed_CacheHitPopulatesGithubURL(t *testing.T) {
+	pileQ := &routedFakeQuerier{handlers: []routedHandler{
+		{match: "FROM boot_blocks", rows: []map[string]any{}},
+	}}
+	commonsQ := &routedFakeQuerier{handlers: []routedHandler{
+		{match: "LEFT JOIN completions", rows: []map[string]any{{
+			"id":         "s1",
+			"skill_tags": `["go"]`,
+			"valence":    `{"quality":4,"reliability":5}`,
+			"message":    "",
+			"author":     "validator",
+			"created_at": "2026-04-13",
+			"evidence":   "https://github.com/foo/bar/pull/1",
+		}}},
+	}}
+	cacheGet := func(h string) (string, bool) {
+		if h == "rileywhite" {
+			return "mr-gh", true
+		}
+		return "", false
+	}
+
+	resp, err := QueryProfileResponse(pileQ, commonsQ, cacheGet, "rileywhite")
+	if err != nil {
+		t.Fatalf("QueryProfileResponse() error = %v", err)
+	}
+	if resp.Kind != KindStampFeed {
+		t.Fatalf("Kind = %q, want stamp_feed", resp.Kind)
+	}
+	if resp.StampFeed.GithubURL != "https://github.com/mr-gh" {
+		t.Fatalf("GithubURL = %q, want https://github.com/mr-gh", resp.StampFeed.GithubURL)
+	}
+}
+
+// TestQueryProfileResponse_StampFeed_CacheMissEmptyGithubURL verifies
+// that a cache miss (handle never resolved) yields an empty GithubURL —
+// the UI gates its anchor on a non-empty href so no link renders.
+func TestQueryProfileResponse_StampFeed_CacheMissEmptyGithubURL(t *testing.T) {
+	pileQ := &routedFakeQuerier{handlers: []routedHandler{
+		{match: "FROM boot_blocks", rows: []map[string]any{}},
+	}}
+	commonsQ := &routedFakeQuerier{handlers: []routedHandler{
+		{match: "LEFT JOIN completions", rows: []map[string]any{{
+			"id":         "s1",
+			"skill_tags": `["go"]`,
+			"valence":    `{"quality":4,"reliability":5}`,
+			"author":     "validator",
+			"created_at": "2026-04-13",
+			"evidence":   "https://github.com/foo/bar/pull/1",
+		}}},
+	}}
+	cacheGet := func(string) (string, bool) { return "", false }
+
+	resp, err := QueryProfileResponse(pileQ, commonsQ, cacheGet, "rileywhite")
+	if err != nil {
+		t.Fatalf("QueryProfileResponse() error = %v", err)
+	}
+	if resp.StampFeed.GithubURL != "" {
+		t.Fatalf("GithubURL = %q, want empty on cache miss", resp.StampFeed.GithubURL)
+	}
+}
+
+// TestQueryProfileResponse_StampFeed_TriedAndFailedEmptyGithubURL verifies
+// that a cache entry with an empty GitHub field (tried-and-failed) also
+// yields an empty GithubURL, indistinguishable from a straight miss for
+// render purposes.
+func TestQueryProfileResponse_StampFeed_TriedAndFailedEmptyGithubURL(t *testing.T) {
+	pileQ := &routedFakeQuerier{handlers: []routedHandler{
+		{match: "FROM boot_blocks", rows: []map[string]any{}},
+	}}
+	commonsQ := &routedFakeQuerier{handlers: []routedHandler{
+		{match: "LEFT JOIN completions", rows: []map[string]any{{
+			"id":         "s1",
+			"skill_tags": `["go"]`,
+			"valence":    `{"quality":4,"reliability":5}`,
+			"author":     "validator",
+			"created_at": "2026-04-13",
+			"evidence":   "https://github.com/foo/bar/pull/1",
+		}}},
+	}}
+	// Handle present but GitHub empty — tried resolution, found no PR URL.
+	cacheGet := func(string) (string, bool) { return "", true }
+
+	resp, err := QueryProfileResponse(pileQ, commonsQ, cacheGet, "rome")
+	if err != nil {
+		t.Fatalf("QueryProfileResponse() error = %v", err)
+	}
+	if resp.StampFeed.GithubURL != "" {
+		t.Fatalf("GithubURL = %q, want empty for tried-and-failed entry", resp.StampFeed.GithubURL)
 	}
 }
 

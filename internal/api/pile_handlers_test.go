@@ -7,9 +7,36 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/gastownhall/wasteland/internal/githubcache"
 	"github.com/gastownhall/wasteland/internal/pile"
 	"github.com/gastownhall/wasteland/internal/sdk"
 )
+
+// stubGithubCache is an in-memory githubcache.Cache for handler tests.
+type stubGithubCache struct {
+	entries map[string]githubcache.Entry
+}
+
+func (s *stubGithubCache) Get(handle string) (githubcache.Entry, bool) {
+	e, ok := s.entries[handle]
+	return e, ok
+}
+
+func (s *stubGithubCache) Put(handle string, entry githubcache.Entry) error {
+	if s.entries == nil {
+		s.entries = map[string]githubcache.Entry{}
+	}
+	s.entries[handle] = entry
+	return nil
+}
+
+func (s *stubGithubCache) All() map[string]githubcache.Entry {
+	out := make(map[string]githubcache.Entry, len(s.entries))
+	for k, v := range s.entries {
+		out[k] = v
+	}
+	return out
+}
 
 // fakePileQuerier returns canned rows for profile queries.
 type fakePileQuerier struct {
@@ -155,9 +182,65 @@ func TestHandleProfile_StampFeed_Success(t *testing.T) {
 	if _, ok := body["stamps_error"]; !ok {
 		t.Error("stamps_error field missing from stamp_feed response")
 	}
+	// With no GitHub handle cache wired up, the stamp feed must not
+	// fabricate a link from the bare rig handle.
+	if body["github_url"] != "" {
+		t.Errorf("github_url = %v, want empty string when cache is not wired", body["github_url"])
+	}
 	stamps, ok := body["stamps"].([]any)
 	if !ok || len(stamps) != 1 {
 		t.Fatalf("stamps = %v", body["stamps"])
+	}
+}
+
+// TestHandleProfile_StampFeed_GithubURLFromCache wires a stub githubcache
+// and asserts the stamp feed renders the resolved username, not the raw
+// rig handle.
+func TestHandleProfile_StampFeed_GithubURLFromCache(t *testing.T) {
+	pq := &fakePileQuerier{rows: map[string][]map[string]any{
+		"SELECT handle": {},
+	}}
+	cq := &fakePileQuerier{rows: map[string][]map[string]any{
+		"SELECT s.id": {
+			{
+				"id":         "s1",
+				"skill_tags": `["go"]`,
+				"valence":    `{"quality":4,"reliability":5}`,
+				"author":     "validator",
+				"created_at": "2026-04-13",
+				"evidence":   "https://github.com/foo/bar/pull/1",
+			},
+		},
+	}}
+	cache := &stubGithubCache{entries: map[string]githubcache.Entry{
+		"ghost": {GitHub: "ghost-gh"},
+	}}
+	s := &Server{
+		clientFunc: func(_ *http.Request) (*sdk.Client, error) { return nil, nil },
+		mux:        http.NewServeMux(),
+	}
+	s.pile = pq
+	s.commons = cq
+	s.SetGitHubCache(cache)
+	s.registerRoutes()
+	ts := httptest.NewServer(s)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/profile/ghost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // test cleanup
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["github_url"] != "https://github.com/ghost-gh" {
+		t.Errorf("github_url = %v, want https://github.com/ghost-gh", body["github_url"])
 	}
 }
 

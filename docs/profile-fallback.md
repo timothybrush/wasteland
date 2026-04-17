@@ -153,6 +153,91 @@ a retry affordance.
 **Zero stamps without error:** impossible under the trigger rules
 (would be a 404).
 
+## GitHub Handle Resolution (Phase 4)
+
+The stamp-feed view links to `github.com/{rig_handle}`, but wasteland
+rig handles are not guaranteed to match their owner's GitHub username.
+Phase 4 adds a persistent local cache mapping `rig_handle →
+github_username` populated from GitHub PR authorship observed in
+stamp evidence URLs.
+
+**Scope.** Local-per-rig JSON file at
+`~/.local/share/wasteland/github-handles.json`. Not federated. Each
+operator builds their own view.
+
+**Record shape.**
+
+```json
+{
+  "rileywhite": {
+    "github": "rileywhite",
+    "source_pr": "https://github.com/gastownhall/gascity/pull/548",
+    "resolved_at": "2026-04-17T12:00:00Z"
+  },
+  "rome": {
+    "github": "",
+    "source_pr": "",
+    "resolved_at": "2026-04-17T12:00:00Z"
+  }
+}
+```
+
+- Absent key → never tried. Consumer shows no GitHub link.
+- Non-empty `github` → resolved. Consumer links to `github.com/{github}`.
+- Empty `github` → tried-and-failed (no parseable PR URL on any stamp).
+  Consumer shows no GitHub link.
+
+**Populate triggers.**
+
+1. **Auto-populate on stamp approval.** The SDK's `Accept` and
+   `AcceptUpstream` methods, after the DML succeeds and the mutex
+   releases, synchronously call the resolver for the stamp's `subject`.
+   5-second timeout. Errors are logged via `slog`; the Accept itself
+   still returns success. Skipped when the subject already has a
+   resolved cache entry.
+
+2. **On-demand via CLI.** `wl resolve-github <handle>` resolves one
+   handle. `wl resolve-github --all` resolves every handle observed in
+   `hop/wl-commons.stamps` that is not already in the cache. Default
+   semantics: single-handle always re-resolves; `--all` skips resolved
+   entries and retries tried-and-failed ones. `--refresh` forces
+   re-resolution of resolved entries too.
+
+**Resolver behavior.**
+
+Queries `hop/wl-commons` for the subject's stamps joined to their
+completions, orders by `created_at DESC`, takes the first evidence URL
+that matches `^https?://github\.com/[^/]+/[^/]+/pull/\d+`, and calls
+`GET https://api.github.com/repos/{owner}/{repo}/pulls/{n}` with
+`Authorization: Bearer $GITHUB_TOKEN`. Reads `.user.login` from the
+response body.
+
+**Auth.** A fine-grained PAT with "Public repositories (read-only)"
+is enough. Set `GITHUB_TOKEN` in the environment. Missing/invalid
+token → resolver logs and skips; cache does not get populated, but
+stamp approval is unaffected.
+
+**Trust model.** The cached `github` field is the author of the most
+recent PR-shaped evidence URL attached to any stamp whose subject is
+this rig handle. It is *not* a cryptographic attestation that the rig
+owns the GitHub account. An evidence URL pointing at somebody else's
+PR would cause the cache to map this rig to that unrelated GitHub
+user. For a thin profile fallback link this is acceptable, but do
+not treat entries as verified identity outside this context.
+
+**Consumer change.** `internal/pile/profile.go` `QueryProfileResponse`
+now reads the cache when building `StampFeed.GithubURL`:
+
+- Cache hit with non-empty `github` → `https://github.com/{github}`.
+- Cache miss or empty `github` → empty string; the web UI already
+  gates the anchor on a non-empty URL, so no link renders.
+
+**Concurrency.** Cache writes use atomic temp-file-then-rename (same
+pattern as `internal/federation/federation.go:fileConfigStore`). No
+advisory file lock; concurrent writers may lose one write but the
+next `Accept` or `--all` repopulates. Corrupted JSON on read logs a
+warning and treats the cache as empty.
+
 ## Out of Scope (v1)
 
 - **Backfill triggering from the UI.** The-pile pipeline is external;
@@ -161,10 +246,13 @@ a retry affordance.
   and will not surface fallback-eligible handles. Users reach the
   fallback only via direct URL or external link. Known gap.
 - **Pagination / "all stamps" view.** Fixed 10, no load-more.
-- **GitHub API calls** to resolve PR authors or profile metadata.
 - **Non-PR evidence rendering beyond `owner/repo`.** Commit and blob
   URLs render as `owner/repo` linked to the full URL; we do not
   special-case them.
+- **Federated handle map.** The cache is per-rig local. Later phases
+  may promote verified mappings to `hop/wl-commons` for shared use.
+- **Automatic cache refresh.** No TTL; stale entries persist until the
+  operator runs `wl resolve-github --refresh` or the file is edited.
 
 ## Implementation Breakdown
 
@@ -197,4 +285,14 @@ Three phases, each ≤ 5 files, each independently verifiable.
 
 - `stamps_error` banner variant.
 - Evidence-parsing correctness tests (PR, non-PR, free text, NULL).
+
+### Phase 4 — GitHub handle resolution cache
+
+- New `internal/githubcache/` package (Cache + Resolver).
+- SDK `Accept`/`AcceptUpstream` hook after mutex release (sync, 5s).
+- `internal/pile/profile.go` reads cache; drops unverified handle
+  fallback.
+- `cmd/wl/cmd_resolve_github.go` CLI: single-handle + `--all` +
+  `--refresh`.
+- Auth: `GITHUB_TOKEN` env var.
 - Style pass to match the existing Ayu / parchment theme.

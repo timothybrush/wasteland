@@ -27,7 +27,7 @@ func (s *Server) handleProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := pile.QueryProfileResponse(s.pile, s.commons, handle)
+	resp, err := pile.QueryProfileResponse(s.pile, s.commons, s.githubHandleLookup(), handle)
 	// When the pile misses and commons is not wired, the caller can't
 	// distinguish "truly unknown handle" from "fallback source is
 	// unconfigured" — surface this as 503 instead of a misleading 404.
